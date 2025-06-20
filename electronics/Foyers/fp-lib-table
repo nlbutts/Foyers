@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "LocalFootprints")(type "KiCad")(uri "/home/nlbutts/projects/frc/Foyers/parts/LocalFootprints.pretty")(options "")(descr ""))
+)

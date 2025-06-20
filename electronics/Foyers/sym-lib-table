@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "LocalSyms")(type "KiCad")(uri "/home/nlbutts/projects/frc/Foyers/parts/LocalSyms.kicad_sym")(options "")(descr ""))
+)
