@@ -1,0 +1,24 @@
+@startuml
+' CAN Distance Sensor — System Architecture
+left to right direction
+skinparam componentStyle uml2
+skinparam defaultFontName Arial
+skinparam shadowing false
+skinparam packageStyle rectangle
+title CAN Distance Sensor — System Architecture
+
+component "12V" as V12
+component "CANIn" as CANIn
+component "CANOut" as CANOut
+component "Foyer" as Foyer
+component "Backporch 1" as Backporch1
+component "Backporch 2" as Backporch2
+
+V12 --> Foyer : 12V
+CANIn --> Foyer : CAN
+Foyer --> CANOut : CAN
+Foyer <--> Backporch1 : RJ45
+Backporch1 <--> Backporch2 : RJ45
+Backporch2 --> Backporch2 : CAN loopback
+
+@enduml
