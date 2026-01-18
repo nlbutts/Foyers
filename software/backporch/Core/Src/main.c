@@ -26,6 +26,7 @@
 #include "usbd_cdc_if.h"
 #include <stdlib.h>
 #include <string.h>
+#include "stm32g0xx_ll_adc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -238,6 +239,8 @@ int main(void)
   MX_TIM1_Init();
   MX_USART5_UART_Init();
   /* USER CODE BEGIN 2 */
+  HAL_ADCEx_Calibration_Start(&hadc1);
+
   HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, 1);
   HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, 1);
 
@@ -809,11 +812,28 @@ void startCanTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    uint16_t current_mA = 0;
+    uint32_t vref_mv = 3300;
+    uint32_t current_mA = 0;
     uint16_t input_voltage_mv = 0;
     int8_t mcu_temp_c = 0;
 
     osDelay(100);
+
+    // Read VREFINT to calculate actual VREF+
+    sConfig.Channel = ADC_CHANNEL_VREFINT;
+    HAL_ADC_ConfigChannel(&hadc1, &sConfig);
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
+      uint32_t vref_data = HAL_ADC_GetValue(&hadc1);
+      if (vref_data > 0) {
+        // VREF+ = VREF+_Charac * VREFINT_CAL / VREFINT_DATA
+        vref_mv = (uint32_t)VREFINT_CAL_VREF * (*VREFINT_CAL_ADDR) / vref_data;
+      }
+    }
+    HAL_ADC_Stop(&hadc1);
+
+    // Sanity check for vref_mv (typically 2.0V to 3.6V)
+    if (vref_mv < 2000 || vref_mv > 3600) vref_mv = 3300;
 
     // Read AN0 (VIN_MEASURE)
     sConfig.Channel = ADC_CHANNEL_0;
@@ -821,8 +841,7 @@ void startCanTask(void *argument)
     HAL_ADC_Start(&hadc1);
     if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
       uint32_t adc_val = HAL_ADC_GetValue(&hadc1);
-      // Assuming a 1/11 voltage divider for VIN (common for ~36V max range on 3.3V ADC)
-      input_voltage_mv = (adc_val * 3300 * 11) / 4095;
+      input_voltage_mv = (uint16_t)((adc_val * vref_mv * 11) / 4095);
     }
     HAL_ADC_Stop(&hadc1);
 
@@ -832,8 +851,8 @@ void startCanTask(void *argument)
     HAL_ADC_Start(&hadc1);
     if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
       uint32_t adc_val = HAL_ADC_GetValue(&hadc1);
-      // Assuming 1:1 scaling for now (raw mV)
-      current_mA = (adc_val * 3300) / 4095 / 40;
+      current_mA = (uint32_t)((adc_val * vref_mv * 40) / 4095);
+      current_mA /= 1000;
     }
     HAL_ADC_Stop(&hadc1);
 
@@ -842,8 +861,13 @@ void startCanTask(void *argument)
     HAL_ADC_ConfigChannel(&hadc1, &sConfig);
     HAL_ADC_Start(&hadc1);
     if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
-      uint32_t adc_val = HAL_ADC_GetValue(&hadc1);
-      mcu_temp_c = adc_val;
+      uint32_t ts_data = HAL_ADC_GetValue(&hadc1);
+      // Scale TS_DATA to characterized reference (3.0V)
+      int32_t ts_data_scaled = (int32_t)ts_data * vref_mv / 3000;
+      
+      // Calculate temperature using factory calibration data
+      mcu_temp_c = (int8_t)((((int32_t)TEMPSENSOR_CAL2_TEMP - TEMPSENSOR_CAL1_TEMP) * (ts_data_scaled - (int32_t)*TEMPSENSOR_CAL1_ADDR)) 
+                   / ((int32_t)*TEMPSENSOR_CAL2_ADDR - (int32_t)*TEMPSENSOR_CAL1_ADDR) + TEMPSENSOR_CAL1_TEMP);
     }
     HAL_ADC_Stop(&hadc1);
 
