@@ -63,8 +63,6 @@ void Error_Handler(void);
 #define VIN_MEASURE_GPIO_Port GPIOA
 #define CURRENT_5V_Pin GPIO_PIN_1
 #define CURRENT_5V_GPIO_Port GPIOA
-#define TB_ABS_Pin GPIO_PIN_2
-#define TB_ABS_GPIO_Port GPIOA
 #define SYS_STATUS_Pin GPIO_PIN_3
 #define SYS_STATUS_GPIO_Port GPIOA
 #define TB_TIMA_Pin GPIO_PIN_0

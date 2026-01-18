@@ -51,8 +51,8 @@
 #define WPILIB_MFG_CODE 	                 42 << 16 // Make some random number. 42 is the answer to life the universe and everything
 #define WPILIB_API_CLASS	                  5 << 10 // Status
 #define WPILIB_API_INDEX_GENERAL_STATUS     0 << 6
-#define WPILIB_API_INDEX_TOF_STATUS         0 << 6
-#define WPILIB_API_INDEX_ENCODER_STATUS     0 << 6
+#define WPILIB_API_INDEX_TOF_STATUS         1 << 6
+#define WPILIB_API_INDEX_ENCODER_STATUS     2 << 6
 #define WPILIB_DEV_NUM		                  0 // TODO this should be configurable per device
 #define BACK_PORCH_GENERAL_STATUS     WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_GENERAL_STATUS | WPILIB_DEV_NUM
 #define BACK_PORCH_TOF_STATUS         WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_TOF_STATUS | WPILIB_DEV_NUM
@@ -92,9 +92,8 @@ FDCAN_HandleTypeDef hfdcan1;
 
 I2C_HandleTypeDef hi2c1;
 
-SPI_HandleTypeDef hspi1;
-
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart5;
@@ -118,7 +117,7 @@ osThreadId_t monTaskHandle;
 const osThreadAttr_t monTask_attributes = {
   .name = "monTask",
   .priority = (osPriority_t) osPriorityLow,
-  .stack_size = 128 * 4
+  .stack_size = 1024 * 4
 };
 /* Definitions for encTask */
 osThreadId_t encTaskHandle;
@@ -133,6 +132,8 @@ const osMessageQueueAttr_t canQ_attributes = {
   .name = "canQ"
 };
 /* USER CODE BEGIN PV */
+volatile uint32_t rising_time = 0;
+volatile uint32_t pulse_width = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -142,9 +143,9 @@ static void MX_ADC1_Init(void);
 static void MX_FDCAN1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_I2C1_Init(void);
-static void MX_SPI1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_USART5_UART_Init(void);
+static void MX_TIM2_Init(void);
 void StartDefaultTask(void *argument);
 void startCanTask(void *argument);
 void StartMonTask(void *argument);
@@ -160,6 +161,21 @@ void txstring(const char * str)
 {
     int len = strlen(str);
     CDC_Transmit_FS((uint8_t*)str, len);
+}
+
+void uart5_puts(const char * str)
+{
+    HAL_UART_Transmit(&huart5, (uint8_t*)str, strlen(str), 100);
+}
+
+void configureTimerForRunTimeStats(void)
+{
+  // TIM2 is already configured and started for input capture
+}
+
+unsigned long getRunTimeCounterValue(void)
+{
+  return TIM2->CNT;
 }
 
 uint32_t murmur3_32(const uint8_t* key, size_t len, uint32_t seed)
@@ -235,9 +251,9 @@ int main(void)
   MX_FDCAN1_Init();
   MX_TIM3_Init();
   MX_I2C1_Init();
-  MX_SPI1_Init();
   MX_TIM1_Init();
   MX_USART5_UART_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   HAL_ADCEx_Calibration_Start(&hadc1);
 
@@ -504,46 +520,6 @@ static void MX_I2C1_Init(void)
 }
 
 /**
-  * @brief SPI1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI1_Init(void)
-{
-
-  /* USER CODE BEGIN SPI1_Init 0 */
-
-  /* USER CODE END SPI1_Init 0 */
-
-  /* USER CODE BEGIN SPI1_Init 1 */
-
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_4BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_HARD_OUTPUT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 7;
-  hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI1_Init 2 */
-
-  /* USER CODE END SPI1_Init 2 */
-
-}
-
-/**
   * @brief TIM1 Initialization Function
   * @param None
   * @retval None
@@ -590,6 +566,54 @@ static void MX_TIM1_Init(void)
   /* USER CODE BEGIN TIM1_Init 2 */
 
   /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4294967295;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_IC_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_BOTHEDGE;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 1;
+  if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
@@ -744,6 +768,25 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM2 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_4)
+  {
+    uint32_t t_rise = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_3);
+    uint32_t t_fall = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_4);
+
+    if (t_fall >= t_rise)
+    {
+      pulse_width = t_fall - t_rise;
+    }
+    else
+    {
+      // Handle wrap around for 32-bit timer
+      pulse_width = (0xFFFFFFFF - t_rise) + t_fall + 1;
+    }
+    pulse_width = pulse_width / 64;
+  }
+}
 
 /* USER CODE END 4 */
 
@@ -786,22 +829,36 @@ void startCanTask(void *argument)
   HAL_GPIO_WritePin(CAN_STB_GPIO_Port, CAN_STB_Pin, GPIO_PIN_RESET);
   HAL_FDCAN_Start(&hfdcan1);
 
+  HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
+  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
+
   uint32_t uid[3];
   uid[0] = HAL_GetUIDw0();
   uid[1] = HAL_GetUIDw1();
   uid[2] = HAL_GetUIDw2();
   uint32_t hashed_id = murmur3_32((uint8_t*)uid, 12, 0);
 
-  FDCAN_TxHeaderTypeDef TxHeader;
-  TxHeader.Identifier = BACK_PORCH_GENERAL_STATUS;
-  TxHeader.IdType = FDCAN_EXTENDED_ID;
-  TxHeader.TxFrameType = FDCAN_DATA_FRAME;
-  TxHeader.DataLength = FDCAN_DLC_BYTES_8;
-  TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-  TxHeader.BitRateSwitch = FDCAN_BRS_OFF;
-  TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
-  TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
-  TxHeader.MessageMarker = 0;
+  FDCAN_TxHeaderTypeDef txGeneralStatus;
+  txGeneralStatus.Identifier = BACK_PORCH_GENERAL_STATUS;
+  txGeneralStatus.IdType = FDCAN_EXTENDED_ID;
+  txGeneralStatus.TxFrameType = FDCAN_DATA_FRAME;
+  txGeneralStatus.DataLength = FDCAN_DLC_BYTES_8;
+  txGeneralStatus.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+  txGeneralStatus.BitRateSwitch = FDCAN_BRS_OFF;
+  txGeneralStatus.FDFormat = FDCAN_CLASSIC_CAN;
+  txGeneralStatus.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+  txGeneralStatus.MessageMarker = 0;
+
+  FDCAN_TxHeaderTypeDef txEncStatus;
+  txEncStatus.Identifier = BACK_PORCH_ENCODER_STATUS;
+  txEncStatus.IdType = FDCAN_EXTENDED_ID;
+  txEncStatus.TxFrameType = FDCAN_DATA_FRAME;
+  txEncStatus.DataLength = FDCAN_DLC_BYTES_8;
+  txEncStatus.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+  txEncStatus.BitRateSwitch = FDCAN_BRS_OFF;
+  txEncStatus.FDFormat = FDCAN_CLASSIC_CAN;
+  txEncStatus.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+  txEncStatus.MessageMarker = 0;
 
   uint8_t TxData[8];
 
@@ -875,7 +932,7 @@ void startCanTask(void *argument)
     HAL_FDCAN_GetProtocolStatus(&hfdcan1, &ProtocolStatus);
     if (ProtocolStatus.BusOff) {
       HAL_FDCAN_Start(&hfdcan1);
-      HAL_GPIO_TogglePin(SYS_STATUS_GPIO_Port, SYS_STATUS_Pin);
+      HAL_GPIO_TogglePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin);
     }
 
     // Populate TxData based on General Status message format
@@ -891,8 +948,19 @@ void startCanTask(void *argument)
     TxData[6] = (uint8_t)((input_voltage_mv >> 8) & 0xFF);
     TxData[7] = (uint8_t)mcu_temp_c;
 
-    HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeader, TxData);
-    HAL_GPIO_TogglePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin);
+    HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txGeneralStatus, TxData);
+
+    TxData[0] = (uint8_t)(pulse_width & 0xFF);
+    TxData[1] = (uint8_t)((pulse_width >> 8) & 0xFF);
+    TxData[2] = 0;
+    TxData[3] = 0;
+    TxData[4] = 0;
+    TxData[5] = 0;
+    TxData[6] = 0;
+    TxData[7] = 0;
+    HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txEncStatus, TxData);
+
+    HAL_GPIO_TogglePin(SYS_STATUS_GPIO_Port, SYS_STATUS_Pin);
   }
   /* USER CODE END startCanTask */
 }
@@ -907,10 +975,23 @@ void startCanTask(void *argument)
 void StartMonTask(void *argument)
 {
   /* USER CODE BEGIN StartMonTask */
+  char stats_buffer[512];
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    osDelay(1000);
+    
+    uart5_puts("\r\n--- FreeRTOS Task List ---\r\n");
+    uart5_puts("TaskName\tStatus\tPrio\tHWM\tTaskID\r\n");
+    vTaskList(stats_buffer);
+    uart5_puts(stats_buffer);
+
+    uart5_puts("\r\n--- FreeRTOS Run Time Stats ---\r\n");
+    uart5_puts("TaskName\tTime\t\tPercentage\r\n");
+    vTaskGetRunTimeStats(stats_buffer);
+    uart5_puts(stats_buffer);
+    
+    uart5_puts("-------------------------------\r\n");
   }
   /* USER CODE END StartMonTask */
 }

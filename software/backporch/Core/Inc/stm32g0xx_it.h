@@ -51,6 +51,7 @@ void HardFault_Handler(void);
 void RCC_IRQHandler(void);
 void USB_UCPD1_2_IRQHandler(void);
 void ADC1_COMP_IRQHandler(void);
+void TIM2_IRQHandler(void);
 void TIM3_TIM4_IRQHandler(void);
 void TIM6_DAC_LPTIM1_IRQHandler(void);
 void TIM16_FDCAN_IT0_IRQHandler(void);
