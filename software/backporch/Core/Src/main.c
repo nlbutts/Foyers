@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "stm32g0xx_ll_adc.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -132,8 +133,9 @@ const osMessageQueueAttr_t canQ_attributes = {
   .name = "canQ"
 };
 /* USER CODE BEGIN PV */
-volatile uint32_t rising_time = 0;
-volatile uint32_t pulse_width = 0;
+volatile int32_t pulse_width_1000deg = 0;
+volatile int32_t enc1_count = 0;
+volatile uint8_t enc1_prev_state = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -603,11 +605,18 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_BOTHEDGE;
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
   sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
   sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
   sConfigIC.ICFilter = 1;
   if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_4) != HAL_OK)
   {
     Error_Handler();
   }
@@ -629,7 +638,7 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 0 */
 
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_Encoder_InitTypeDef sConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_IC_InitTypeDef sConfigIC = {0};
 
@@ -642,16 +651,20 @@ static void MX_TIM3_Init(void)
   htim3.Init.Period = 65535;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
   if (HAL_TIM_IC_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
   {
     Error_Handler();
   }
@@ -661,7 +674,7 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_BOTHEDGE;
   sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
   sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
   sConfigIC.ICFilter = 0;
@@ -775,16 +788,47 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
     uint32_t t_rise = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_3);
     uint32_t t_fall = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_4);
 
-    if (t_fall >= t_rise)
+    uint32_t pulse_width = t_fall - t_rise;
+    /*
+    Refer to this for the Rev Through Bore Encoder Pulse Width specification:
+    https://docs.broadcom.com/doc/pub-005892
+
+    1025 us is the max value. We have a 64 MHz clock, therefore the max value should be 65600
+    PWM period: 1025
+
+      t=0us  t=1us                             t=1024us  t=1025us
+        |      |                                   |         |
+        v      v                                   v         v
+      +---+                                                +---+
+PWM   |   |                                                |   |  Absolute position = 16'h0
+      +   +------------------------------------------------+   +
+      :   :                                                :   :
+      :   :                                                :   :
+      +   +------------------------------------------------+   +
+PWM   |                                                        |  Absolute position = 16'hFFFF
+      +---+                                                +---+
+        ^      ^                                   ^         ^
+        |      |                                   |         |
+      t=0us  t=1us                             t=1024us  t=1025us
+    */ 
+    if (pulse_width > 65600)
     {
-      pulse_width = t_fall - t_rise;
+      pulse_width = t_rise - t_fall;
     }
-    else
-    {
-      // Handle wrap around for 32-bit timer
-      pulse_width = (0xFFFFFFFF - t_rise) + t_fall + 1;
-    }
-    pulse_width = pulse_width / 64;
+    int pulse_width_us = pulse_width / 64;
+    pulse_width_1000deg = (pulse_width_us * 36000) / 1025;
+  }
+  else if (htim->Instance == TIM3)
+  {
+    // Software Quadrature Decoder for TIM3 CH3 (PB0) and CH4 (PB1)
+    // TIM3_CH3 is PB0, TIM3_CH4 is PB1
+    uint8_t a = (GPIOB->IDR & GPIO_PIN_0) ? 1 : 0;
+    uint8_t b = (GPIOB->IDR & GPIO_PIN_1) ? 1 : 0;
+    uint8_t curr_state = (a << 1) | b;
+    static const int8_t q_table[16] = {0, 1, -1, 0, -1, 0, 0, 1, 1, 0, 0, -1, 0, -1, 1, 0};
+    
+    enc1_count += q_table[(enc1_prev_state << 2) | curr_state];
+    enc1_prev_state = curr_state;
   }
 }
 
@@ -831,6 +875,10 @@ void startCanTask(void *argument)
 
   HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
   HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
+
+  // Start TIM3 software encoder (Interrupts on both edges)
+  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_3);
+  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_4);
 
   uint32_t uid[3];
   uid[0] = HAL_GetUIDw0();
@@ -950,10 +998,11 @@ void startCanTask(void *argument)
 
     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txGeneralStatus, TxData);
 
-    TxData[0] = (uint8_t)(pulse_width & 0xFF);
-    TxData[1] = (uint8_t)((pulse_width >> 8) & 0xFF);
-    TxData[2] = 0;
-    TxData[3] = 0;
+    TxData[0] = (uint8_t)(pulse_width_1000deg & 0xFF);
+    TxData[1] = (uint8_t)((pulse_width_1000deg >> 8) & 0xFF);
+    
+    TxData[2] = (uint8_t)(enc1_count & 0xFF);
+    TxData[3] = (uint8_t)((enc1_count >> 8) & 0xFF);
     TxData[4] = 0;
     TxData[5] = 0;
     TxData[6] = 0;
@@ -975,23 +1024,39 @@ void startCanTask(void *argument)
 void StartMonTask(void *argument)
 {
   /* USER CODE BEGIN StartMonTask */
-  char stats_buffer[512];
+  char stats_buffer[1024];
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1000);
+    osDelay(2000);
     
-    uart5_puts("\r\n--- FreeRTOS Task List ---\r\n");
-    uart5_puts("TaskName\tStatus\tPrio\tHWM\tTaskID\r\n");
+    // Clear screen and home cursor
+    uart5_puts("\033[2J\033[H");
+    
+    // Header
+    uart5_puts("\033[1;36m================ SYSTEM PERFORMANCE MONITOR ================\033[0m\r\n");
+    
+    // Stack and Task Info
+    uart5_puts("\033[1;33m--- Task Status ---\033[0m\r\n");
+    uart5_puts("Name             State  Prio  FreeStack(Words)  ID\r\n");
+    uart5_puts("----------------------------------------------------------\r\n");
     vTaskList(stats_buffer);
     uart5_puts(stats_buffer);
 
-    uart5_puts("\r\n--- FreeRTOS Run Time Stats ---\r\n");
-    uart5_puts("TaskName\tTime\t\tPercentage\r\n");
+    // CPU Usage
+    uart5_puts("\r\n\033[1;33m--- CPU Usage ---\033[0m\r\n");
+    uart5_puts("Name             Abs Time       Time %\r\n");
+    uart5_puts("----------------------------------------------------------\r\n");
     vTaskGetRunTimeStats(stats_buffer);
     uart5_puts(stats_buffer);
+
+    // Heap Info
+    uart5_puts("\r\n\033[1;33m--- Memory Info ---\033[0m\r\n");
+    char heap_str[64];
+    sprintf(heap_str, "Free Heap: %u bytes\r\n", (unsigned int)xPortGetFreeHeapSize());
+    uart5_puts(heap_str);
     
-    uart5_puts("-------------------------------\r\n");
+    uart5_puts("\033[1;36m============================================================\033[0m\r\n");
   }
   /* USER CODE END StartMonTask */
 }

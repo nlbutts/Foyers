@@ -64,7 +64,7 @@ class CanMonitorApp:
         
         self.lbl_enc1_abs = ttk.Label(frame_enc, text="Enc1 Abs: -°", style="Data.TLabel")
         self.lbl_enc1_abs.grid(row=0, column=0, padx=10, sticky="w")
-        self.lbl_enc1_inc = ttk.Label(frame_enc, text="Enc1 Inc: -°", style="Data.TLabel")
+        self.lbl_enc1_inc = ttk.Label(frame_enc, text="Enc1 Inc: - counts", style="Data.TLabel")
         self.lbl_enc1_inc.grid(row=1, column=0, padx=10, sticky="w")
         
         self.lbl_enc2_abs = ttk.Label(frame_enc, text="Enc2 Abs: -°", style="Data.TLabel")
@@ -90,9 +90,9 @@ class CanMonitorApp:
 
                     elif msg.arbitration_id == 0xA2A1480:
                         # 4x uint16: Abs1, Inc1, Abs2, Inc2 (0.01 deg units)
-                        e1a, e1i, e2a, e2i = struct.unpack("<HHHH", msg.data)
+                        e1a, e1i, e2a, e2i = struct.unpack("<HhHh", msg.data)
                         self.data["Encoder"] = {
-                            "Enc1_Abs": e1a / 100.0, "Enc1_Inc": e1i / 100.0,
+                            "Enc1_Abs": e1a / 100.0, "Enc1_Inc": e1i,
                             "Enc2_Abs": e2a / 100.0, "Enc2_Inc": e2i / 100.0
                         }
             except Exception as e:
@@ -115,7 +115,7 @@ class CanMonitorApp:
         # Update Encoders
         e = self.data["Encoder"]
         self.lbl_enc1_abs.config(text=f"Enc1 Abs: {e['Enc1_Abs']:.2f}°")
-        self.lbl_enc1_inc.config(text=f"Enc1 Inc: {e['Enc1_Inc']:.2f}°")
+        self.lbl_enc1_inc.config(text=f"Enc1 Inc: {e['Enc1_Inc']}")
         self.lbl_enc2_abs.config(text=f"Enc2 Abs: {e['Enc2_Abs']:.2f}°")
         self.lbl_enc2_inc.config(text=f"Enc2 Inc: {e['Enc2_Inc']:.2f}°")
 
