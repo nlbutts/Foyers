@@ -27,7 +27,8 @@ class CanMonitorApp:
         logger.info("Initializing CanMonitorApp")
         # Data storage
         self.data = {
-            "General": {"ID": 0, "Current": 0, "Voltage": 0, "Temp": 0},
+            "Version": {"Hash": 0, "Type": "Unknown", "Major": 0, "Minor": 0, "Build": 0},
+            "General": {"Current": 0, "Voltage": 0, "Temp": 0},
             "TOF": {"Status": 0, "Distance": 0, "Ambient": 0, "Signal": 0},
             "Encoder": {"Enc1_Abs": 0, "Enc1_Inc": 0, "Enc2_Abs": 0, "Enc2_Inc": 0}
         }
@@ -83,11 +84,21 @@ class CanMonitorApp:
         
         ttk.Label(frame_boot, textvariable=self.update_status, foreground="blue").pack()
 
+        # Software Version
+        frame_ver = ttk.LabelFrame(self.root, text=" Software Version (0xA2A1400) ", padding=10)
+        frame_ver.pack(fill="x", padx=10, pady=5)
+        self.lbl_ver_hash = ttk.Label(frame_ver, text="UID Hash: -", style="Data.TLabel")
+        self.lbl_ver_hash.pack(side="left", padx=10)
+        self.lbl_ver_type = ttk.Label(frame_ver, text="Type: -", style="Data.TLabel")
+        self.lbl_ver_type.pack(side="left", padx=10)
+        self.lbl_ver_num = ttk.Label(frame_ver, text="Ver: -.-", style="Data.TLabel")
+        self.lbl_ver_num.pack(side="left", padx=10)
+        self.lbl_ver_build = ttk.Label(frame_ver, text="Build: -", style="Data.TLabel")
+        self.lbl_ver_build.pack(side="left", padx=10)
+
         # General Status
-        frame_gen = ttk.LabelFrame(self.root, text=" General Status (0xA2A1400) ", padding=10)
+        frame_gen = ttk.LabelFrame(self.root, text=" General Status (0xA2A1440) ", padding=10)
         frame_gen.pack(fill="x", padx=10, pady=5)
-        self.lbl_id = ttk.Label(frame_gen, text="Unique ID: -", style="Data.TLabel")
-        self.lbl_id.pack(side="left", padx=10)
         self.lbl_current = ttk.Label(frame_gen, text="Current: - mA", style="Data.TLabel")
         self.lbl_current.pack(side="left", padx=10)
         self.lbl_voltage = ttk.Label(frame_gen, text="Voltage: - mV", style="Data.TLabel")
@@ -96,7 +107,7 @@ class CanMonitorApp:
         self.lbl_temp.pack(side="left", padx=10)
 
         # TOF Status
-        frame_tof = ttk.LabelFrame(self.root, text=" TOF Status (0xA2A1440) ", padding=10)
+        frame_tof = ttk.LabelFrame(self.root, text=" TOF Status (0xA2A1480) ", padding=10)
         frame_tof.pack(fill="x", padx=10, pady=5)
         self.lbl_tof_dist = ttk.Label(frame_tof, text="Distance: - mm", style="Data.TLabel")
         self.lbl_tof_dist.pack(side="left", padx=10)
@@ -106,7 +117,7 @@ class CanMonitorApp:
         self.lbl_tof_ambient.pack(side="left", padx=10)
 
         # Encoder Status
-        frame_enc = ttk.LabelFrame(self.root, text=" Encoder Status (0xA2A1480) ", padding=10)
+        frame_enc = ttk.LabelFrame(self.root, text=" Encoder Status (0xA2A14C0) ", padding=10)
         frame_enc.pack(fill="x", padx=10, pady=5)
         
         self.lbl_enc1_abs = ttk.Label(frame_enc, text="Enc1 Abs: -°", style="Data.TLabel")
@@ -253,18 +264,35 @@ class CanMonitorApp:
 
     def process_msg(self, msg):
         if msg.arbitration_id == 0xA2A1400:
-            # Byte 0-3: ID, Byte 4: Current, Byte 5-6: Voltage, Byte 7: Temp
-            uid, current, voltage, temp = struct.unpack("<IBHb", msg.data)
-            self.data["General"] = {"ID": uid, "Current": current, "Voltage": voltage, "Temp": temp}
-        
+            # Byte 0-3: Hash, Byte 4: Mode/Ver, Byte 5-7: Build
+            uhash = struct.unpack("<I", msg.data[0:4])[0]
+            mode_byte = msg.data[4]
+            mode_str = "App" if (mode_byte & 0x01) else "Boot"
+            major = (mode_byte >> 1) & 0x07
+            minor = (mode_byte >> 4) & 0x0F
+            build = struct.unpack("<I", msg.data[4:8])[0] >> 8 # 24-bit build number
+            self.data["Version"] = {
+                "Hash": uhash, "Type": mode_str, 
+                "Major": major, "Minor": minor, "Build": build
+            }
+
         elif msg.arbitration_id == 0xA2A1440:
-            # Byte 0: Status, Byte 2-3: Distance, Byte 4-5: Ambient, Byte 6-7: Signal
+            # Byte 0-3: [Removed ID], Byte 4: Current, Byte 5-6: Voltage, Byte 7: Temp
+            # Note: The C code actually changed the format. Let's look at main.c again.
+            # Byte 4 is Current (idx 4 if assuming it's same buffer as before, but let's assume it's compact now)
+            # Actually looking at main.c:
+            # Byte 0-3: Hash, Byte 4: Current, Byte 5-6: Voltage, Byte 7: Temp
+            uid, current, voltage, temp = struct.unpack("<IBHb", msg.data)
+            self.data["General"] = {"Current": current, "Voltage": voltage, "Temp": temp}
+        
+        elif msg.arbitration_id == 0xA2A1480:
+            # TOF Status
             status = msg.data[0]
             dist, amb, sig = struct.unpack("<HHH", msg.data[2:8])
             self.data["TOF"] = {"Status": status, "Distance": dist, "Ambient": amb, "Signal": sig}
-
-        elif msg.arbitration_id == 0xA2A1480:
-            # 4x uint16: Abs1, Inc1, Abs2, Inc2 (0.01 deg units)
+        
+        elif msg.arbitration_id == 0xA2A14C0:
+            # Encoder Status
             e1a, e1i, e2a, e2i = struct.unpack("<HhHh", msg.data)
             self.data["Encoder"] = {
                 "Enc1_Abs": e1a / 100.0, "Enc1_Inc": e1i,
@@ -317,9 +345,15 @@ class CanMonitorApp:
             time.sleep(0.02) # 20 ms interval
 
     def update_ui(self):
+        # Update Version
+        v = self.data["Version"]
+        self.lbl_ver_hash.config(text=f"UID Hash: {v['Hash']:08X}")
+        self.lbl_ver_type.config(text=f"Type: {v['Type']}")
+        self.lbl_ver_num.config(text=f"Ver: {v['Major']}.{v['Minor']}")
+        self.lbl_ver_build.config(text=f"Build: {v['Build']}")
+
         # Update General
         g = self.data["General"]
-        self.lbl_id.config(text=f"Unique ID: {g['ID']:08X}")
         self.lbl_current.config(text=f"Current: {g['Current']} mA")
         self.lbl_voltage.config(text=f"Voltage: {g['Voltage']} mV")
         self.lbl_temp.config(text=f"Temp: {g['Temp']} °C")

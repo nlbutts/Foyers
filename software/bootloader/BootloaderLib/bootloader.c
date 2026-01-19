@@ -2,11 +2,17 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include "version.h"
+
+/* Version Defines */
+#define MAJOR_VERSION 1
+#define MINOR_VERSION 0
 
 /* Extern handles from main.c */
 extern FDCAN_HandleTypeDef hfdcan1;
 extern CRC_HandleTypeDef hcrc;
 extern UART_HandleTypeDef huart5;
+extern IWDG_HandleTypeDef hiwdg;
 //extern uint32_t _magic_word_start; // Symbol from linker script
 uint32_t * _magic_word_start = (uint32_t *)0x20000000; // Define it here for simplicity
 
@@ -76,7 +82,100 @@ void Bootloader_Init(void) {
     Log("Bootloader Ready.");
 }
 
+/* API Status Class */
+#define API_CLASS_STATUS (5 << 10)
+#define API_INDEX_SW_VERSION (0 << 6)
+
+static uint32_t lastVersionSendTime = 0;
+
+/* MurmurHash3 from application */
+static uint32_t murmur3_32(const uint8_t* key, size_t len, uint32_t seed) {
+    uint32_t h = seed;
+    uint32_t k;
+    const uint32_t* data = (const uint32_t*)key;
+    const size_t nblocks = len / 4;
+
+    for (size_t i = 0; i < nblocks; i++) {
+        k = data[i];
+        k *= 0xcc9e2d51;
+        k = (k << 15) | (k >> 17);
+        k *= 0x1b873593;
+        h ^= k;
+        h = (h << 13) | (h >> 19);
+        h = h * 5 + 0xe6546b64;
+    }
+
+    const uint8_t* tail = (const uint8_t*)(key + nblocks * 4);
+    k = 0;
+    switch (len & 3) {
+        case 3: k ^= tail[2] << 16;
+        case 2: k ^= tail[1] << 8;
+        case 1: k ^= tail[0];
+                k *= 0xcc9e2d51;
+                k = (k << 15) | (k >> 17);
+                k *= 0x1b873593;
+                h ^= k;
+    }
+
+    h ^= len;
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    return h;
+}
+
+static void SendVersion(void) {
+    FDCAN_TxHeaderTypeDef TxHeader;
+    uint8_t TxData[8];
+    uint32_t uid[3];
+    
+    uid[0] = HAL_GetUIDw0();
+    uid[1] = HAL_GetUIDw1();
+    uid[2] = HAL_GetUIDw2();
+    
+    uint32_t hash = murmur3_32((uint8_t*)uid, 12, 0);
+    
+    /* Construct Message */
+    /* Byte 0-3: Hash */
+    memcpy(&TxData[0], &hash, 4);
+    
+    /* Byte 4: Version Info 
+       Bit 0: 0 (Bootloader)
+       Bits 3:1: Major
+       Bits 7:4: Minor
+    */
+    TxData[4] = 0 | (MAJOR_VERSION << 1) | (MINOR_VERSION << 4);
+    
+    /* Byte 5-7: Build Number */
+    uint32_t build = BUILD_NUMBER;
+    TxData[5] = build & 0xFF;
+    TxData[6] = (build >> 8) & 0xFF;
+    TxData[7] = (build >> 16) & 0xFF;
+
+    TxHeader.Identifier = WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | API_CLASS_STATUS | API_INDEX_SW_VERSION | 0; // Device ID 0
+    TxHeader.IdType = FDCAN_EXTENDED_ID;
+    TxHeader.TxFrameType = FDCAN_DATA_FRAME;
+    TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+    TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+    TxHeader.BitRateSwitch = FDCAN_BRS_OFF;
+    TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
+    TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+    TxHeader.MessageMarker = 0;
+    
+    HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeader, TxData);
+}
+
 void Bootloader_Loop(void) {
+    HAL_IWDG_Refresh(&hiwdg);
+    
+    uint32_t now = HAL_GetTick();
+    if (now - lastVersionSendTime >= 100) {
+        lastVersionSendTime = now;
+        SendVersion();
+    }
+
     /* State Machine Housekeeping if needed */
     switch (currentState) {
         case BOOT_STATE_VERIFYING:
@@ -250,6 +349,16 @@ static void SendStatus(uint8_t status, uint32_t data) {
 }
 
 void Bootloader_CheckAndJump(void) {
+    /* Check if Watchdog triggered the reset */
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
+        Log("Watchdog Reset detected! Staying in Bootloader.");
+        __HAL_RCC_CLEAR_RESET_FLAGS();
+        return;
+    }
+    
+    /* Clear reset flags for clean state if normal boot */
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+
     uint32_t magic = *MAGIC_WORD_ADDR;
     
     if (magic == HEAD_MAGIC_WORD) {
@@ -265,6 +374,7 @@ void Bootloader_CheckAndJump(void) {
         
         if (flashCrc == pConfig->appCrc) {
             Log("App verified. Jumping to 0x%08X...", APP_START_ADDR);
+            HAL_IWDG_Refresh(&hiwdg);
             HAL_RCC_DeInit();
             HAL_DeInit();
             
