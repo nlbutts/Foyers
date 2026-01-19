@@ -25,13 +25,10 @@ class CanMonitorApp:
         self.root.geometry("600x750")
         
         logger.info("Initializing CanMonitorApp")
-        # Data storage
-        self.data = {
-            "Version": {"Hash": 0, "Type": "Unknown", "Major": 0, "Minor": 0, "Build": 0},
-            "General": {"Current": 0, "Voltage": 0, "Temp": 0},
-            "TOF": {"Status": 0, "Distance": 0, "Ambient": 0, "Signal": 0},
-            "Encoder": {"Enc1_Abs": 0, "Enc1_Inc": 0, "Enc2_Abs": 0, "Enc2_Inc": 0}
-        }
+        # Data storage and Multicast CAN
+        self.devices = {} # device_id -> device_data
+        self.can_handlers = [] # list of functions(msg)
+        self.can_handlers.append(self.dispatch_to_devices)
         
         self.bin_path = tk.StringVar(value="")
         self.update_status = tk.StringVar(value="Idle")
@@ -84,51 +81,11 @@ class CanMonitorApp:
         
         ttk.Label(frame_boot, textvariable=self.update_status, foreground="blue").pack()
 
-        # Software Version
-        frame_ver = ttk.LabelFrame(self.root, text=" Software Version (0xA2A1400) ", padding=10)
-        frame_ver.pack(fill="x", padx=10, pady=5)
-        self.lbl_ver_hash = ttk.Label(frame_ver, text="UID Hash: -", style="Data.TLabel")
-        self.lbl_ver_hash.pack(side="left", padx=10)
-        self.lbl_ver_type = ttk.Label(frame_ver, text="Type: -", style="Data.TLabel")
-        self.lbl_ver_type.pack(side="left", padx=10)
-        self.lbl_ver_num = ttk.Label(frame_ver, text="Ver: -.-", style="Data.TLabel")
-        self.lbl_ver_num.pack(side="left", padx=10)
-        self.lbl_ver_build = ttk.Label(frame_ver, text="Build: -", style="Data.TLabel")
-        self.lbl_ver_build.pack(side="left", padx=10)
-
-        # General Status
-        frame_gen = ttk.LabelFrame(self.root, text=" General Status (0xA2A1440) ", padding=10)
-        frame_gen.pack(fill="x", padx=10, pady=5)
-        self.lbl_current = ttk.Label(frame_gen, text="Current: - mA", style="Data.TLabel")
-        self.lbl_current.pack(side="left", padx=10)
-        self.lbl_voltage = ttk.Label(frame_gen, text="Voltage: - mV", style="Data.TLabel")
-        self.lbl_voltage.pack(side="left", padx=10)
-        self.lbl_temp = ttk.Label(frame_gen, text="Temp: - °C", style="Data.TLabel")
-        self.lbl_temp.pack(side="left", padx=10)
-
-        # TOF Status
-        frame_tof = ttk.LabelFrame(self.root, text=" TOF Status (0xA2A1480) ", padding=10)
-        frame_tof.pack(fill="x", padx=10, pady=5)
-        self.lbl_tof_dist = ttk.Label(frame_tof, text="Distance: - mm", style="Data.TLabel")
-        self.lbl_tof_dist.pack(side="left", padx=10)
-        self.lbl_tof_status = ttk.Label(frame_tof, text="Status: -", style="Data.TLabel")
-        self.lbl_tof_status.pack(side="left", padx=10)
-        self.lbl_tof_ambient = ttk.Label(frame_tof, text="Ambient: - Mcps", style="Data.TLabel")
-        self.lbl_tof_ambient.pack(side="left", padx=10)
-
-        # Encoder Status
-        frame_enc = ttk.LabelFrame(self.root, text=" Encoder Status (0xA2A14C0) ", padding=10)
-        frame_enc.pack(fill="x", padx=10, pady=5)
+        # Device Status Container
+        self.devices_frame = ttk.Frame(self.root)
+        self.devices_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
-        self.lbl_enc1_abs = ttk.Label(frame_enc, text="Enc1 Abs: -°", style="Data.TLabel")
-        self.lbl_enc1_abs.grid(row=0, column=0, padx=10, sticky="w")
-        self.lbl_enc1_inc = ttk.Label(frame_enc, text="Enc1 Inc: - counts", style="Data.TLabel")
-        self.lbl_enc1_inc.grid(row=1, column=0, padx=10, sticky="w")
-        
-        self.lbl_enc2_abs = ttk.Label(frame_enc, text="Enc2 Abs: -°", style="Data.TLabel")
-        self.lbl_enc2_abs.grid(row=0, column=1, padx=10, sticky="w")
-        self.lbl_enc2_inc = ttk.Label(frame_enc, text="Enc2 Inc: -°", style="Data.TLabel")
-        self.lbl_enc2_inc.grid(row=1, column=1, padx=10, sticky="w")
+        # We will dynamically create frames inside devices_frame
 
     def browse_file(self):
         path = filedialog.askopenfilename(filetypes=[("Binary files", "*.bin"), ("All files", "*.*")])
@@ -150,10 +107,14 @@ class CanMonitorApp:
         CTRL_ID = 0x0A2A0400 | dev_id
         DATA_ID = 0x0A2A0800 | dev_id
 
-        logger.info(f"Bootloader update targeting Device ID: {dev_id}")
-        self.running = False
-        time.sleep(0.2)  # Allow receive thread to pause
+        # Use a queue to capture messages for this update session
+        response_queue = []
+        def update_handler(msg):
+            response_queue.append(msg)
+        
+        self.can_handlers.append(update_handler)
 
+        logger.info(f"Bootloader update targeting Device ID: {dev_id}")
         self.updating = True
         try:
             with open(self.bin_path.get(), "rb") as f:
@@ -164,9 +125,17 @@ class CanMonitorApp:
             self.update_status.set("Starting Session...")
             self.progress["value"] = 0
             
-            # Flush any old messages
-            logger.debug("Flushing CAN receive queue")
-            while self.bus.recv(0.01): pass
+            # Flush queue
+            response_queue.clear()
+
+            # Constant waiting logic
+            def wait_for_msg(timeout=2.0):
+                start = time.time()
+                while time.time() - start < timeout:
+                    if response_queue:
+                        return response_queue.pop(0)
+                    time.sleep(0.01)
+                return None
 
             # CMD_START
             logger.info(f"Sending CMD_START to ID 0x{CTRL_ID:08X}")
@@ -176,7 +145,7 @@ class CanMonitorApp:
             ack_received = False
             start_time = time.time()
             while time.time() - start_time < 2.0:
-                msg = self.bus.recv(0.1)
+                msg = wait_for_msg(0.1)
                 if msg:
                     logger.debug(f"Received during START wait: ID=0x{msg.arbitration_id:08X} Data={msg.data.hex()}")
                     if msg.arbitration_id == CTRL_ID and len(msg.data) >= 2:
@@ -184,8 +153,6 @@ class CanMonitorApp:
                             logger.info("Received ACK for START")
                             ack_received = True
                             break
-                    else:
-                        self.process_msg(msg)
             
             if not ack_received:
                 logger.error("Failed to receive ACK for START command")
@@ -206,8 +173,6 @@ class CanMonitorApp:
                 if i % 512 == 0:
                     logger.debug(f"Sent {sent}/{total_size} bytes")
                     self.update_status.set(f"Sending: {sent}/{total_size} bytes")
-                    msg = self.bus.recv(0.001)
-                    if msg: self.process_msg(msg)
                 time.sleep(0.0005)
 
             logger.info("All data sent. Sending COMMIT command.")
@@ -220,7 +185,7 @@ class CanMonitorApp:
             success = False
             start_time = time.time()
             while time.time() - start_time < 5.0:
-                msg = self.bus.recv(0.1)
+                msg = wait_for_msg(0.1)
                 if msg:
                     logger.debug(f"Received during COMMIT wait: ID=0x{msg.arbitration_id:08X} Data={msg.data.hex()}")
                     if msg.arbitration_id == CTRL_ID and len(msg.data) >= 2:
@@ -234,8 +199,6 @@ class CanMonitorApp:
                                 logger.error("Update failed: CRC Mismatch reported by device")
                                 self.update_status.set("Error: CRC Mismatch")
                                 break
-                    else:
-                        self.process_msg(msg)
 
             if not success and "Error" not in self.update_status.get():
                 logger.error("Commit command timed out")
@@ -246,58 +209,105 @@ class CanMonitorApp:
             self.update_status.set(f"Error: {str(e)}")
         
         self.updating = False
+        self.can_handlers.remove(update_handler)
         self.btn_update.config(state="normal")
 
     def receive_can(self):
         while self.running:
             try:
-                if hasattr(self, 'updating') and self.updating:
-                    time.sleep(0.1)
-                    continue
                 msg = self.bus.recv(0.1)
                 if msg:
-                    logger.debug(f"RX: ID=0x{msg.arbitration_id:08X} Data={msg.data.hex()}")
-                    self.process_msg(msg)
+                    # Pump to all interested handlers
+                    for handler in list(self.can_handlers): # list() to prevent mutation issues
+                        try:
+                            handler(msg)
+                        except Exception as e:
+                            logger.error(f"Handler error: {e}")
             except Exception as e:
                 logger.error(f"Receive error: {e}")
         logger.info("Receive thread exiting.")
 
-    def process_msg(self, msg):
-        if msg.arbitration_id == 0xA2A1400:
-            # Byte 0-3: Hash, Byte 4: Mode/Ver, Byte 5-7: Build
+    def dispatch_to_devices(self, msg):
+        """Dispatcher that breaks down the WPILib Frame and routes to device objects."""
+        # WPILib Frame: 
+        # Bits 24-28: Device Type (10 for us)
+        # Bits 16-23: Mfg (42 for us)
+        # Bits 10-15: API Class
+        # Bits 6-9: API Index
+        # Bits 0-5: Device ID
+        
+        # Simple check for our Mfg/Type
+        if (msg.arbitration_id & 0x1FFF0000) != 0x0A2A0000:
+            return
+            
+        dev_id = msg.arbitration_id & 0x3F
+        api_id = (msg.arbitration_id >> 6) & 0x3FF # Class + Index
+        
+        if dev_id not in self.devices:
+            if len(self.devices) >= 10: return # Cap at 10 devices
+            logger.info(f"New device discovered: {dev_id}")
+            self.create_device(dev_id)
+            
+        device = self.devices[dev_id]
+        device["last_seen"] = time.time()
+        
+        # Route based on API
+        if api_id == 0x140: # Class 5, Index 0 (SW Version)
             uhash = struct.unpack("<I", msg.data[0:4])[0]
             mode_byte = msg.data[4]
             mode_str = "App" if (mode_byte & 0x01) else "Boot"
             major = (mode_byte >> 1) & 0x07
             minor = (mode_byte >> 4) & 0x0F
-            build = struct.unpack("<I", msg.data[4:8])[0] >> 8 # 24-bit build number
-            self.data["Version"] = {
-                "Hash": uhash, "Type": mode_str, 
-                "Major": major, "Minor": minor, "Build": build
-            }
+            build = struct.unpack("<I", msg.data[4:8])[0] >> 8
+            device["data"]["Version"] = {"Hash": uhash, "Type": mode_str, "Major": major, "Minor": minor, "Build": build}
 
-        elif msg.arbitration_id == 0xA2A1440:
-            # Byte 0-3: [Removed ID], Byte 4: Current, Byte 5-6: Voltage, Byte 7: Temp
-            # Note: The C code actually changed the format. Let's look at main.c again.
-            # Byte 4 is Current (idx 4 if assuming it's same buffer as before, but let's assume it's compact now)
-            # Actually looking at main.c:
-            # Byte 0-3: Hash, Byte 4: Current, Byte 5-6: Voltage, Byte 7: Temp
-            uid, current, voltage, temp = struct.unpack("<IBHb", msg.data)
-            self.data["General"] = {"Current": current, "Voltage": voltage, "Temp": temp}
-        
-        elif msg.arbitration_id == 0xA2A1480:
-            # TOF Status
+        elif api_id == 0x141: # Class 5, Index 1 (General)
+            # Match application's pack format [I B H b] if hash is included, or just the values
+            # Based on previous logic assuming [I B H b]:
+            uid_hash, current, voltage, temp = struct.unpack("<IBHb", msg.data)
+            device["data"]["General"] = {"Current": current, "Voltage": voltage, "Temp": temp}
+
+        elif api_id == 0x142: # Class 5, Index 2 (TOF)
             status = msg.data[0]
             dist, amb, sig = struct.unpack("<HHH", msg.data[2:8])
-            self.data["TOF"] = {"Status": status, "Distance": dist, "Ambient": amb, "Signal": sig}
-        
-        elif msg.arbitration_id == 0xA2A14C0:
-            # Encoder Status
+            device["data"]["TOF"] = {"Status": status, "Distance": dist, "Ambient": amb, "Signal": sig}
+
+        elif api_id == 0x143: # Class 5, Index 3 (Encoder)
             e1a, e1i, e2a, e2i = struct.unpack("<HhHh", msg.data)
-            self.data["Encoder"] = {
-                "Enc1_Abs": e1a / 100.0, "Enc1_Inc": e1i,
-                "Enc2_Abs": e2a / 100.0, "Enc2_Inc": e2i / 100.0
+            device["data"]["Encoder"] = {"Enc1_Abs": e1a/100, "Enc1_Inc": e1i, "Enc2_Abs": e2a/100, "Enc2_Inc": e2i/100}
+
+    def create_device(self, dev_id):
+        # UI Frame for this device
+        frame = ttk.LabelFrame(self.devices_frame, text=f" Device ID: {dev_id} ", padding=5)
+        frame.pack(fill="x", pady=2)
+        
+        # Create labels and store them
+        labels = {}
+        row1 = ttk.Frame(frame)
+        row1.pack(fill="x")
+        labels["ver"] = ttk.Label(row1, text="Ver: -.- (Boot) Build: -", style="Data.TLabel")
+        labels["ver"].pack(side="left", padx=5)
+        labels["gen"] = ttk.Label(row1, text="Current: - mA | Volt: - mV", style="Data.TLabel")
+        labels["gen"].pack(side="left", padx=20)
+        
+        row2 = ttk.Frame(frame)
+        row2.pack(fill="x")
+        labels["tof"] = ttk.Label(row2, text="Dist: - mm | Status: -", style="Data.TLabel")
+        labels["tof"].pack(side="left", padx=5)
+        labels["enc"] = ttk.Label(row2, text="E1: - deg | E2: - deg", style="Data.TLabel")
+        labels["enc"].pack(side="left", padx=20)
+
+        self.devices[dev_id] = {
+            "last_seen": time.time(),
+            "frame": frame,
+            "labels": labels,
+            "data": {
+                "Version": {"Type": "-", "Major": 0, "Minor": 0, "Build": 0},
+                "General": {"Current": 0, "Voltage": 0},
+                "TOF": {"Distance": 0, "Status": 0},
+                "Encoder": {"Enc1_Abs": 0, "Enc2_Abs": 0}
             }
+        }
 
     def calculate_stm32_crc(self, content):
         """
@@ -345,31 +355,35 @@ class CanMonitorApp:
             time.sleep(0.02) # 20 ms interval
 
     def update_ui(self):
-        # Update Version
-        v = self.data["Version"]
-        self.lbl_ver_hash.config(text=f"UID Hash: {v['Hash']:08X}")
-        self.lbl_ver_type.config(text=f"Type: {v['Type']}")
-        self.lbl_ver_num.config(text=f"Ver: {v['Major']}.{v['Minor']}")
-        self.lbl_ver_build.config(text=f"Build: {v['Build']}")
+        now = time.time()
+        to_delete = []
 
-        # Update General
-        g = self.data["General"]
-        self.lbl_current.config(text=f"Current: {g['Current']} mA")
-        self.lbl_voltage.config(text=f"Voltage: {g['Voltage']} mV")
-        self.lbl_temp.config(text=f"Temp: {g['Temp']} °C")
+        for dev_id, dev in self.devices.items():
+            # Check for timeout
+            if now - dev["last_seen"] > 1.0:
+                to_delete.append(dev_id)
+                continue
+                
+            # Update labels
+            d = dev["data"]
+            l = dev["labels"]
+            
+            v = d["Version"]
+            l["ver"].config(text=f"Ver: {v['Major']}.{v['Minor']} ({v['Type']}) Build: {v['Build']}")
+            
+            g = d["General"]
+            l["gen"].config(text=f"Current: {g['Current']} mA | Volt: {g['Voltage']} mV")
+            
+            t = d["TOF"]
+            l["tof"].config(text=f"Dist: {t['Distance']} mm | Status: {t['Status']}")
+            
+            e = d["Encoder"]
+            l["enc"].config(text=f"E1: {e['Enc1_Abs']:.2f}° | E2: {e['Enc2_Abs']:.2f}°")
 
-        # Update TOF
-        t = self.data["TOF"]
-        self.lbl_tof_dist.config(text=f"Distance: {t['Distance']} mm")
-        self.lbl_tof_status.config(text=f"Status: {t['Status']}")
-        self.lbl_tof_ambient.config(text=f"Ambient: {t['Ambient']} Mcps")
-
-        # Update Encoders
-        e = self.data["Encoder"]
-        self.lbl_enc1_abs.config(text=f"Enc1 Abs: {e['Enc1_Abs']:.2f}°")
-        self.lbl_enc1_inc.config(text=f"Enc1 Inc: {e['Enc1_Inc']}")
-        self.lbl_enc2_abs.config(text=f"Enc2 Abs: {e['Enc2_Abs']:.2f}°")
-        self.lbl_enc2_inc.config(text=f"Enc2 Inc: {e['Enc2_Inc']:.2f}°")
+        for dev_id in to_delete:
+            logger.info(f"Removing timed out device: {dev_id}")
+            self.devices[dev_id]["frame"].destroy()
+            del self.devices[dev_id]
 
         self.root.after(100, self.update_ui)
 
