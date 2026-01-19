@@ -3,35 +3,55 @@ import struct
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+import zlib
+import logging
+from tkinter import ttk, filedialog
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(threadName)s: %(message)s',
+    handlers=[
+        logging.FileHandler("can_monitor.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class CanMonitorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("BackPorch CAN Monitor")
-        self.root.geometry("600x500")
+        self.root.title("BackPorch CAN Monitor & Bootloader")
+        self.root.geometry("600x750")
         
+        logger.info("Initializing CanMonitorApp")
         # Data storage
         self.data = {
             "General": {"ID": 0, "Current": 0, "Voltage": 0, "Temp": 0},
             "TOF": {"Status": 0, "Distance": 0, "Ambient": 0, "Signal": 0},
             "Encoder": {"Enc1_Abs": 0, "Enc1_Inc": 0, "Enc2_Abs": 0, "Enc2_Inc": 0}
         }
+        
+        self.bin_path = tk.StringVar(value="")
+        self.update_status = tk.StringVar(value="Idle")
+        self.device_id = tk.IntVar(value=0)
+        self.updating = False
 
         self.setup_ui()
         
         # CAN setup
         try:
+            logger.info("Opening CAN bus on COM5 at 1Mbps")
             self.bus = can.interface.Bus(bustype='slcan', channel='COM5', bitrate=1000000)
             self.running = True
             
-            self.receive_thread = threading.Thread(target=self.receive_can, daemon=True)
+            self.receive_thread = threading.Thread(target=self.receive_can, name="ReceiveThread", daemon=True)
             self.receive_thread.start()
             
-            self.heartbeat_thread = threading.Thread(target=self.send_heartbeat, daemon=True)
+            self.heartbeat_thread = threading.Thread(target=self.send_heartbeat, name="HeartbeatThread", daemon=True)
             self.heartbeat_thread.start()
         except Exception as e:
-            print(f"Error opening CAN bus: {e}")
+            logger.error(f"Error opening CAN bus: {e}")
             self.running = False
 
         self.update_ui()
@@ -40,6 +60,28 @@ class CanMonitorApp:
         style = ttk.Style()
         style.configure("Header.TLabel", font=("Arial", 12, "bold"))
         style.configure("Data.TLabel", font=("Consolas", 10))
+
+        # Bootloader Section
+        frame_boot = ttk.LabelFrame(self.root, text=" Bootloader ", padding=10)
+        frame_boot.pack(fill="x", padx=10, pady=5)
+
+        file_row = ttk.Frame(frame_boot)
+        file_row.pack(fill="x", pady=2)
+        ttk.Label(file_row, text="File:").pack(side="left")
+        ttk.Entry(file_row, textvariable=self.bin_path).pack(side="left", fill="x", expand=True, padx=5)
+        ttk.Button(file_row, text="Browse", command=self.browse_file).pack(side="left")
+
+        ctrl_row = ttk.Frame(frame_boot)
+        ctrl_row.pack(fill="x", pady=2)
+        ttk.Label(ctrl_row, text="Device ID:").pack(side="left")
+        ttk.Spinbox(ctrl_row, from_=0, to=63, textvariable=self.device_id, width=5).pack(side="left", padx=5)
+        self.btn_update = ttk.Button(ctrl_row, text="Start Update", command=self.start_update_thread)
+        self.btn_update.pack(side="left", padx=10)
+
+        self.progress = ttk.Progressbar(frame_boot, orient="horizontal", length=100, mode="determinate")
+        self.progress.pack(fill="x", pady=5)
+        
+        ttk.Label(frame_boot, textvariable=self.update_status, foreground="blue").pack()
 
         # General Status
         frame_gen = ttk.LabelFrame(self.root, text=" General Status (0xA2A1400) ", padding=10)
@@ -77,31 +119,184 @@ class CanMonitorApp:
         self.lbl_enc2_inc = ttk.Label(frame_enc, text="Enc2 Inc: -°", style="Data.TLabel")
         self.lbl_enc2_inc.grid(row=1, column=1, padx=10, sticky="w")
 
+    def browse_file(self):
+        path = filedialog.askopenfilename(filetypes=[("Binary files", "*.bin"), ("All files", "*.*")])
+        if path:
+            self.bin_path.set(path)
+
+    def start_update_thread(self):
+        if not self.bin_path.get():
+            logger.warning("Update started without file selected")
+            self.update_status.set("Error: No file selected")
+            return
+        
+        logger.info(f"Starting bootloader update thread with file: {self.bin_path.get()}")
+        self.btn_update.config(state="disabled")
+        threading.Thread(target=self.run_bootloader_update, name="BootloaderThread", daemon=True).start()
+
+    def run_bootloader_update(self):
+        dev_id = self.device_id.get() & 0x3F
+        CTRL_ID = 0x0A2A0400 | dev_id
+        DATA_ID = 0x0A2A0800 | dev_id
+
+        logger.info(f"Bootloader update targeting Device ID: {dev_id}")
+        self.running = False
+        time.sleep(0.2)  # Allow receive thread to pause
+
+        self.updating = True
+        try:
+            with open(self.bin_path.get(), "rb") as f:
+                content = f.read()
+
+            total_size = len(content)
+            logger.debug(f"Read binary file: {total_size} bytes")
+            self.update_status.set("Starting Session...")
+            self.progress["value"] = 0
+            
+            # Flush any old messages
+            logger.debug("Flushing CAN receive queue")
+            while self.bus.recv(0.01): pass
+
+            # CMD_START
+            logger.info(f"Sending CMD_START to ID 0x{CTRL_ID:08X}")
+            self.bus.send(can.Message(arbitration_id=CTRL_ID, data=[0x01], is_extended_id=True))
+            
+            # Wait for ACK (0xAA 0x00)
+            ack_received = False
+            start_time = time.time()
+            while time.time() - start_time < 2.0:
+                msg = self.bus.recv(0.1)
+                if msg:
+                    logger.debug(f"Received during START wait: ID=0x{msg.arbitration_id:08X} Data={msg.data.hex()}")
+                    if msg.arbitration_id == CTRL_ID and len(msg.data) >= 2:
+                        if msg.data[0] == 0xAA and msg.data[1] == 0x00:
+                            logger.info("Received ACK for START")
+                            ack_received = True
+                            break
+                    else:
+                        self.process_msg(msg)
+            
+            if not ack_received:
+                logger.error("Failed to receive ACK for START command")
+                self.update_status.set("Error: No ACK from device")
+                self.btn_update.config(state="normal")
+                self.updating = False
+                return
+
+            logger.info("Beginning data streaming")
+            self.update_status.set("Sending Data...")
+            sent = 0
+            
+            for i in range(0, total_size, 8):
+                chunk = content[i:i+8]
+                self.bus.send(can.Message(arbitration_id=DATA_ID, data=list(chunk), is_extended_id=True))
+                sent += len(chunk)
+                self.progress["value"] = (sent / total_size) * 100
+                if i % 512 == 0:
+                    logger.debug(f"Sent {sent}/{total_size} bytes")
+                    self.update_status.set(f"Sending: {sent}/{total_size} bytes")
+                    msg = self.bus.recv(0.001)
+                    if msg: self.process_msg(msg)
+                time.sleep(0.0005)
+
+            logger.info("All data sent. Sending COMMIT command.")
+            self.update_status.set("Committing...")
+            crc = self.calculate_stm32_crc(content)
+            logger.debug(f"Calculated CRC32: 0x{crc:08X}")
+            commit_data = [0x02] + list(struct.pack("<I", crc))
+            self.bus.send(can.Message(arbitration_id=CTRL_ID, data=commit_data, is_extended_id=True))
+
+            success = False
+            start_time = time.time()
+            while time.time() - start_time < 5.0:
+                msg = self.bus.recv(0.1)
+                if msg:
+                    logger.debug(f"Received during COMMIT wait: ID=0x{msg.arbitration_id:08X} Data={msg.data.hex()}")
+                    if msg.arbitration_id == CTRL_ID and len(msg.data) >= 2:
+                        if msg.data[0] == 0xAA:
+                            if msg.data[1] == 0x01:
+                                logger.info("Update Successful! Device is rebooting.")
+                                success = True
+                                self.update_status.set("Update Successful! Rebooting...")
+                                break
+                            elif msg.data[1] == 0xEE:
+                                logger.error("Update failed: CRC Mismatch reported by device")
+                                self.update_status.set("Error: CRC Mismatch")
+                                break
+                    else:
+                        self.process_msg(msg)
+
+            if not success and "Error" not in self.update_status.get():
+                logger.error("Commit command timed out")
+                self.update_status.set("Error: Commit Timeout")
+
+        except Exception as e:
+            logger.exception("Unexpected error during bootloader update")
+            self.update_status.set(f"Error: {str(e)}")
+        
+        self.updating = False
+        self.btn_update.config(state="normal")
+
     def receive_can(self):
         while self.running:
             try:
+                if hasattr(self, 'updating') and self.updating:
+                    time.sleep(0.1)
+                    continue
                 msg = self.bus.recv(0.1)
                 if msg:
-                    if msg.arbitration_id == 0xA2A1400:
-                        # Byte 0-3: ID, Byte 4: Current, Byte 5-6: Voltage, Byte 7: Temp
-                        uid, current, voltage, temp = struct.unpack("<IBHb", msg.data)
-                        self.data["General"] = {"ID": uid, "Current": current, "Voltage": voltage, "Temp": temp}
-                    
-                    elif msg.arbitration_id == 0xA2A1440:
-                        # Byte 0: Status, Byte 2-3: Distance, Byte 4-5: Ambient, Byte 6-7: Signal
-                        status = msg.data[0]
-                        dist, amb, sig = struct.unpack("<HHH", msg.data[2:8])
-                        self.data["TOF"] = {"Status": status, "Distance": dist, "Ambient": amb, "Signal": sig}
-
-                    elif msg.arbitration_id == 0xA2A1480:
-                        # 4x uint16: Abs1, Inc1, Abs2, Inc2 (0.01 deg units)
-                        e1a, e1i, e2a, e2i = struct.unpack("<HhHh", msg.data)
-                        self.data["Encoder"] = {
-                            "Enc1_Abs": e1a / 100.0, "Enc1_Inc": e1i,
-                            "Enc2_Abs": e2a / 100.0, "Enc2_Inc": e2i / 100.0
-                        }
+                    logger.debug(f"RX: ID=0x{msg.arbitration_id:08X} Data={msg.data.hex()}")
+                    self.process_msg(msg)
             except Exception as e:
-                print(f"Receive error: {e}")
+                logger.error(f"Receive error: {e}")
+        logger.info("Receive thread exiting.")
+
+    def process_msg(self, msg):
+        if msg.arbitration_id == 0xA2A1400:
+            # Byte 0-3: ID, Byte 4: Current, Byte 5-6: Voltage, Byte 7: Temp
+            uid, current, voltage, temp = struct.unpack("<IBHb", msg.data)
+            self.data["General"] = {"ID": uid, "Current": current, "Voltage": voltage, "Temp": temp}
+        
+        elif msg.arbitration_id == 0xA2A1440:
+            # Byte 0: Status, Byte 2-3: Distance, Byte 4-5: Ambient, Byte 6-7: Signal
+            status = msg.data[0]
+            dist, amb, sig = struct.unpack("<HHH", msg.data[2:8])
+            self.data["TOF"] = {"Status": status, "Distance": dist, "Ambient": amb, "Signal": sig}
+
+        elif msg.arbitration_id == 0xA2A1480:
+            # 4x uint16: Abs1, Inc1, Abs2, Inc2 (0.01 deg units)
+            e1a, e1i, e2a, e2i = struct.unpack("<HhHh", msg.data)
+            self.data["Encoder"] = {
+                "Enc1_Abs": e1a / 100.0, "Enc1_Inc": e1i,
+                "Enc2_Abs": e2a / 100.0, "Enc2_Inc": e2i / 100.0
+            }
+
+    def calculate_stm32_crc(self, content):
+        """
+        Calculates CRC32 using the standard STM32 algorithm:
+        - Polynomial: 0x04C11DB7
+        - Initial Value: 0xFFFFFFFF
+        - Input: 32-bit words (Little Endian)
+        - No reflection
+        - No final XOR (or XOR with 0)
+        """
+        crc = 0xFFFFFFFF
+        # Process in 32-bit chunks, truncating any remainder bytes just like the Bootloader C code
+        length_words = len(content) // 4
+        
+        for i in range(length_words):
+            # Extract 4 bytes
+            chunk = content[i*4 : (i+1)*4]
+            # Convert to 32-bit int (Little Endian)
+            val = struct.unpack('<I', chunk)[0]
+            
+            crc ^= val
+            for _ in range(32):
+                if crc & 0x80000000:
+                    crc = ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF
+                else:
+                    crc = (crc << 1) & 0xFFFFFFFF
+        return crc
 
     def send_heartbeat(self):
         """Sends the WPILib Heartbeat message every 20ms in a dedicated thread."""
@@ -117,7 +312,7 @@ class CanMonitorApp:
             try:
                 self.bus.send(msg)
             except Exception as e:
-                print(f"Send error: {e}")
+                logger.error(f"Send heartbeat error: {e}")
             
             time.sleep(0.02) # 20 ms interval
 

@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bootloader.h"
+#include "stm32g0xx_hal_gpio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -105,6 +106,9 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);
   Bootloader_Init();
   Bootloader_CheckAndJump();
+  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, 1);
+  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, 1);
+  HAL_GPIO_WritePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -119,9 +123,9 @@ int main(void)
     uint32_t duty;
     
     if (cycle < 1000) {
-        duty = cycle; // 0 to 999
+        duty = 1000 - cycle; // 1000 to 1
     } else {
-        duty = 2000 - cycle; // 1000 to 1
+        duty = cycle - 1000; // 0 to 1000
     }
     
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, duty);
@@ -272,7 +276,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4294967295;
+  htim2.Init.Period = 1000;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
@@ -379,7 +383,13 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
+{
+  if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != 0)
+  {
+    Bootloader_RxCallback();
+  }
+}
 /* USER CODE END 4 */
 
 /**
