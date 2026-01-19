@@ -239,7 +239,7 @@ class CanMonitorApp:
         # Simple check for our Mfg/Type
         if (msg.arbitration_id & 0x1FFF0000) != 0x0A2A0000:
             return
-            
+           
         dev_id = msg.arbitration_id & 0x3F
         api_id = (msg.arbitration_id >> 6) & 0x3FF # Class + Index
         
@@ -250,9 +250,11 @@ class CanMonitorApp:
             
         device = self.devices[dev_id]
         device["last_seen"] = time.time()
-        
+
+        logger.info(f"msg: {msg} api_id: {api_id}")
+
         # Route based on API
-        if api_id == 0x140: # Class 5, Index 0 (SW Version)
+        if api_id == 0x50: # Class 5, Index 0 (SW Version)
             uhash = struct.unpack("<I", msg.data[0:4])[0]
             mode_byte = msg.data[4]
             mode_str = "App" if (mode_byte & 0x01) else "Boot"
@@ -261,18 +263,18 @@ class CanMonitorApp:
             build = struct.unpack("<I", msg.data[4:8])[0] >> 8
             device["data"]["Version"] = {"Hash": uhash, "Type": mode_str, "Major": major, "Minor": minor, "Build": build}
 
-        elif api_id == 0x141: # Class 5, Index 1 (General)
+        elif api_id == 0x51: # Class 5, Index 1 (General)
             # Match application's pack format [I B H b] if hash is included, or just the values
             # Based on previous logic assuming [I B H b]:
             uid_hash, current, voltage, temp = struct.unpack("<IBHb", msg.data)
             device["data"]["General"] = {"Current": current, "Voltage": voltage, "Temp": temp}
 
-        elif api_id == 0x142: # Class 5, Index 2 (TOF)
+        elif api_id == 0x52: # Class 5, Index 2 (TOF)
             status = msg.data[0]
             dist, amb, sig = struct.unpack("<HHH", msg.data[2:8])
             device["data"]["TOF"] = {"Status": status, "Distance": dist, "Ambient": amb, "Signal": sig}
 
-        elif api_id == 0x143: # Class 5, Index 3 (Encoder)
+        elif api_id == 0x53: # Class 5, Index 3 (Encoder)
             e1a, e1i, e2a, e2i = struct.unpack("<HhHh", msg.data)
             device["data"]["Encoder"] = {"Enc1_Abs": e1a/100, "Enc1_Inc": e1i, "Enc2_Abs": e2a/100, "Enc2_Inc": e2i/100}
 

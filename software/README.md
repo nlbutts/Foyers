@@ -20,8 +20,9 @@ The bootloader uses 29-bit Extended IDs following the WPIlib format.
 | `0x0A` (10)  | `0x2A` (42)  | *Variable*   | `0`        | `0`        |
 
 ### API Classes
-1. **Control (0x01)**: Command and Status operations.
-2. **Data (0x02)**: streaming binary application data.
+1. **Control (0x01)**: Command and Status operations (Bootloader).
+2. **Data (0x02)**: Streaming binary application data (Bootloader).
+5. **Status (0x05)**: Application runtime status messages.
 
 ### Commands
 #### 1. Start Session
@@ -86,3 +87,41 @@ For the *Boot-Up Verification* (checking app validity on power-on), the bootload
     - Send `DATA` chunks (`0x0A2A0800` -> `...`)
     - Send `COMMIT` (`0x0A2A0400` -> `02 AA BB CC DD`)
 5. **Verify**: Device should reboot and run application.
+
+## Application Status Messages (API Class 5)
+When running in application mode, the device broadcasts status messages using API Class 5.
+
+### 1. Software Version (Index 0)
+- **ID**: `0x0A2A1400`
+- **Data**:
+    - **Byte 0-3**: Unique 32-bit ID (MurmurHash3 of CPU Serial, Little Endian)
+    - **Byte 4**: Version Info
+        - Bit 0: Mode (0: Bootloader, 1: Application)
+        - Bits 1-3: Major Version
+        - Bits 4-7: Minor Version
+    - **Byte 5-7**: 24-bit build number (Little Endian)
+
+### 2. General Status (Index 1)
+- **ID**: `0x0A2A1440`
+- **Data**:
+    - **Byte 0-3**: Unique 32-bit ID (MurmurHash3 of CPU Serial, Little Endian)
+    - **Byte 4**: Current (mA)
+    - **Byte 5-6**: Voltage (mV, Little Endian)
+    - **Byte 7**: Temperature (°C)
+
+### 3. TOF Status (Index 2)
+- **ID**: `0x0A2A1480`
+- **Data**:
+    - **Byte 0**: ST TOF API Status
+    - **Byte 1**: Reserved
+    - **Byte 2-3**: Distance (mm, Little Endian)
+    - **Byte 4-5**: Ambient Mcps (Little Endian)
+    - **Byte 6-7**: Signal Mcps (Little Endian)
+
+### 4. Encoder Status (Index 3)
+- **ID**: `0x0A2A14C0`
+- **Data**:
+    - **Byte 0-1**: Encoder 1 Absolute Position (0.01°, Little Endian)
+    - **Byte 2-3**: Encoder 1 Incremental Position (0.01°, Little Endian)
+    - **Byte 4-5**: Encoder 2 Absolute Position (0.01°, Little Endian)
+    - **Byte 6-7**: Encoder 2 Incremental Position (0.01°, Little Endian)

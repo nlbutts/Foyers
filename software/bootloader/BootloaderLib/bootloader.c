@@ -82,10 +82,6 @@ void Bootloader_Init(void) {
     Log("Bootloader Ready.");
 }
 
-/* API Status Class */
-#define API_CLASS_STATUS (5 << 10)
-#define API_INDEX_SW_VERSION (0 << 6)
-
 static uint32_t lastVersionSendTime = 0;
 
 /* MurmurHash3 from application */
@@ -154,7 +150,7 @@ static void SendVersion(void) {
     TxData[6] = (build >> 8) & 0xFF;
     TxData[7] = (build >> 16) & 0xFF;
 
-    TxHeader.Identifier = WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | API_CLASS_STATUS | API_INDEX_SW_VERSION | 0; // Device ID 0
+    TxHeader.Identifier = WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS_STATUS | WPILIB_API_INDEX_SW_VERSION | 0; // Device ID 0
     TxHeader.IdType = FDCAN_EXTENDED_ID;
     TxHeader.TxFrameType = FDCAN_DATA_FRAME;
     TxHeader.DataLength = FDCAN_DLC_BYTES_8;
@@ -174,6 +170,7 @@ void Bootloader_Loop(void) {
     if (now - lastVersionSendTime >= 100) {
         lastVersionSendTime = now;
         SendVersion();
+        Log("Running bootloader...");
     }
 
     /* State Machine Housekeeping if needed */
@@ -331,7 +328,7 @@ static void SendStatus(uint8_t status, uint32_t data) {
     FDCAN_TxHeaderTypeDef TxHeader;
     uint8_t TxData[8];
     
-    TxHeader.Identifier = WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | lastDeviceID | (API_CLASS_CONTROL); 
+    TxHeader.Identifier = BOOTLOADER_START | lastDeviceID; 
     TxHeader.IdType = FDCAN_EXTENDED_ID;
     TxHeader.TxFrameType = FDCAN_DATA_FRAME;
     TxHeader.DataLength = FDCAN_DLC_BYTES_8;

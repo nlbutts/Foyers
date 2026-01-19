@@ -4,6 +4,7 @@ add_library(bootloader_lib STATIC
 
 target_include_directories(bootloader_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../common
 )
 
 # We need to link against the main project includes (e.g. main.h) 

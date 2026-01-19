@@ -28,6 +28,7 @@
 #include <string.h>
 #include "stm32g0xx_ll_adc.h"
 #include <stdio.h>
+#include "bp_can_api.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,59 +37,6 @@
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-/*
- *                                      Example
- *        Speed Control Mode Disable from Luminary Micro Jaguar Speed Controller (dev # 4)
- *
- * Field      | Device Type | Manufacturer Code      |      API Class   | Index      | Device Number |
- * Value      |      2      |         2              |          1       |   1        |       4       |
- *            |             |                        |               API             |               |
- *            +-------------+------------------------+------------------+------------+---------------+
- * Bits       | 0| 0| 0| 1| 0 | 0| 0| 0| 0| 0| 0| 1| 0 | 0| 0| 0| 0| 0| 1 | 0| 0| 0| 1 | 0| 0| 0| 1| 0| 0 |
- * Bit Pos    |28|27|26|25|24 |23|22|21|20|19|18|17|16 |15|14|13|12|11|10 | 9| 8| 7| 6 | 5| 4| 3| 2| 1| 0 |
- */
-#define WPILIB_DEVICE_TYPE 	               10 << 24 // Miscellaneous Device  
-#define WPILIB_MFG_CODE 	                 42 << 16 // Make some random number. 42 is the answer to life the universe and everything
-#define WPILIB_API_CLASS	                  5 << 10 // Status
-#define WPILIB_API_INDEX_SW_VERSION         0 << 6
-#define WPILIB_API_INDEX_GENERAL_STATUS     1 << 6
-#define WPILIB_API_INDEX_TOF_STATUS         2 << 6
-#define WPILIB_API_INDEX_ENCODER_STATUS     3 << 6
-#define WPILIB_DEV_NUM		                  0 // TODO this should be configurable per device
-#define BACK_PORCH_GENERAL_STATUS     WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_GENERAL_STATUS | WPILIB_DEV_NUM
-#define BACK_PORCH_TOF_STATUS         WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_TOF_STATUS | WPILIB_DEV_NUM
-#define BACK_PORCH_ENCODER_STATUS     WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_ENCODER_STATUS | WPILIB_DEV_NUM
-
-#define WPILIB_HEARTBEAT_ID           0x01011840
-
-/*
- Version message data format:
-    Byte 0-3: Unique ID () using the MurmurHash3 algorithm on the device's serial number (little endian)
-    Byte 4: 
-      Bits 0: Bootblock (0) or application (1)
-      Bits 3:1: Major version
-      Bits 7:4: Minor version
-    Byte 5-7: Unique build number
-
- General Status message data format:
-    Byte 0-3: Unique ID () using the MurmurHash3 algorithm on the device's serial number (little endian)
-    Byte 4: Current in mA (0-255mA)
-    Byte 5-6: Input Voltage in mV (0-65535mV)
-    Byte 7: Temperature in degrees Celsius (redundant for testing)
-
- TOF message data format:
-    Byte 0 - API Status from ST TOF
-    Byte 2-3: Distance in mm (little endian)
-    Byte 4-5: ambient Mcps (little endian)
-    Byte 6-7: signal Mcps (little endian)
-
-  Through Bore Encoder status message data format:
-    Byte 0-1: Encoder 1 Absolete position in 0.01 degrees (little endian)
-    Byte 2-3: Encoder 1 Incremental position in 0.01 degrees (little endian)
-    Byte 4-5: Encoder 2 Absolete position in 0.01 degrees (little endian)
-    Byte 6-7: Encoder 2 Incremental position in 0.01 degrees (little endian)
-    */
 
 /* USER CODE END PD */
 

@@ -4,14 +4,10 @@
 #include "main.h"
 #include <stdint.h>
 
-/* WPILib CAN Addressing Constants */
-#define WPILIB_DEVICE_TYPE (10 << 24) // Miscellaneous Device
-#define WPILIB_MFG_CODE (42 << 16)    // "Answer to Life"
-#define WPILIB_DEVICE_ID (0)          // Default Device ID
+#include "bp_can_api.h"
 
-/* API Classes */
-#define API_CLASS_CONTROL (1 << 10)
-#define API_CLASS_DATA (2 << 10)
+/* WPILib CAN Addressing Constants */
+#define WPILIB_DEVICE_ID (0) // Default Device ID
 
 /* Magic Word for Bootloader Entry */
 #define HEAD_MAGIC_WORD 0xDEADBEEF
