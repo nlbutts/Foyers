@@ -59,6 +59,8 @@
 #define BACK_PORCH_TOF_STATUS         WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_TOF_STATUS | WPILIB_DEV_NUM
 #define BACK_PORCH_ENCODER_STATUS     WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_ENCODER_STATUS | WPILIB_DEV_NUM
 
+#define WPILIB_HEARTBEAT_ID           0x01011840
+
 /*
  General Status message data format:
     Byte 0-3: Unique ID () using the MurmurHash3 algorithm on the device's serial number (little endian)
@@ -871,6 +873,16 @@ void startCanTask(void *argument)
 {
   /* USER CODE BEGIN startCanTask */
   HAL_GPIO_WritePin(CAN_STB_GPIO_Port, CAN_STB_Pin, GPIO_PIN_RESET);
+
+  FDCAN_FilterTypeDef sFilterConfig;
+  sFilterConfig.IdType = FDCAN_EXTENDED_ID;
+  sFilterConfig.FilterIndex = 0;
+  sFilterConfig.FilterType = FDCAN_FILTER_MASK;
+  sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+  sFilterConfig.FilterID1 = WPILIB_HEARTBEAT_ID;
+  sFilterConfig.FilterID2 = 0x1FFFFFFF; // Exact match
+  HAL_FDCAN_ConfigFilter(&hfdcan1, &sFilterConfig);
+
   HAL_FDCAN_Start(&hfdcan1);
 
   HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
@@ -914,9 +926,29 @@ void startCanTask(void *argument)
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
 
+  uint32_t last_heartbeat_tick = 0;
+
   /* Infinite loop */
   for(;;)
   {
+    // Receive Heartbeat
+    FDCAN_RxHeaderTypeDef rxHeader;
+    uint8_t rxData[8];
+    while (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &rxHeader, rxData) == HAL_OK)
+    {
+      if (rxHeader.Identifier == WPILIB_HEARTBEAT_ID)
+      {
+        last_heartbeat_tick = osKernelGetTickCount();
+      }
+    }
+
+    // Update LED
+    if (last_heartbeat_tick > 0 && (osKernelGetTickCount() - last_heartbeat_tick) < 500) {
+        HAL_GPIO_WritePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin, GPIO_PIN_RESET);
+    } else {
+        HAL_GPIO_WritePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin, GPIO_PIN_SET);
+    }
+
     uint32_t vref_mv = 3300;
     uint32_t current_mA = 0;
     uint16_t input_voltage_mv = 0;

@@ -1,6 +1,7 @@
 import can
 import struct
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -23,8 +24,12 @@ class CanMonitorApp:
         try:
             self.bus = can.interface.Bus(bustype='slcan', channel='COM5', bitrate=1000000)
             self.running = True
-            self.thread = threading.Thread(target=self.receive_can, daemon=True)
-            self.thread.start()
+            
+            self.receive_thread = threading.Thread(target=self.receive_can, daemon=True)
+            self.receive_thread.start()
+            
+            self.heartbeat_thread = threading.Thread(target=self.send_heartbeat, daemon=True)
+            self.heartbeat_thread.start()
         except Exception as e:
             print(f"Error opening CAN bus: {e}")
             self.running = False
@@ -97,6 +102,24 @@ class CanMonitorApp:
                         }
             except Exception as e:
                 print(f"Receive error: {e}")
+
+    def send_heartbeat(self):
+        """Sends the WPILib Heartbeat message every 20ms in a dedicated thread."""
+        # Arb ID 0x01011840: Robot Controller Heartbeat
+        # Data [1, 0, 0, 0, 0, 0, 0, 0]: Enabled, Red 1, Teleop
+        msg = can.Message(
+            arbitration_id=0x01011840,
+            data=[1, 0, 0, 0, 0, 0, 0, 0],
+            is_extended_id=True
+        )
+        
+        while self.running:
+            try:
+                self.bus.send(msg)
+            except Exception as e:
+                print(f"Send error: {e}")
+            
+            time.sleep(0.02) # 20 ms interval
 
     def update_ui(self):
         # Update General
