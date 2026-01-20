@@ -14,7 +14,6 @@ extern CRC_HandleTypeDef hcrc;
 extern UART_HandleTypeDef huart5;
 extern IWDG_HandleTypeDef hiwdg;
 //extern uint32_t _magic_word_start; // Symbol from linker script
-uint32_t * _magic_word_start = (uint32_t *)0x20000000; // Define it here for simplicity
 
 /* Global State */
 static BootloaderState_t currentState = BOOT_STATE_IDLE;
@@ -277,6 +276,7 @@ static void VerifyAndFlash(void) {
 
         Log("Programming %lu bytes to Flash...", bytesReceived);
         for (uint32_t i = 0; i < bytesReceived; i += 8) {
+            HAL_IWDG_Refresh(&hiwdg); // Feed WDT during programming
             uint64_t data = *((uint64_t*)(pRamBuffer + i));
             if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, APP_START_ADDR + i, data) != HAL_OK) {
                 Log("Program Error at addr 0x%08lX", APP_START_ADDR + i);
@@ -360,6 +360,7 @@ void Bootloader_CheckAndJump(void) {
     
     if (magic == HEAD_MAGIC_WORD) {
         Log("Magic Word detected. Staying in bootloader.");
+        *MAGIC_WORD_ADDR = 0; // Clear magic word so next boot is normal
         return; 
     }
     

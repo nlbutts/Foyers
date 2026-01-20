@@ -137,26 +137,32 @@ class CanMonitorApp:
                     time.sleep(0.01)
                 return None
 
-            # CMD_START
-            logger.info(f"Sending CMD_START to ID 0x{CTRL_ID:08X}")
-            self.bus.send(can.Message(arbitration_id=CTRL_ID, data=[0x01], is_extended_id=True))
-            
-            # Wait for ACK (0xAA 0x00)
+            # CMD_START (Retry loop)
             ack_received = False
-            start_time = time.time()
-            while time.time() - start_time < 2.0:
-                msg = wait_for_msg(0.1)
-                if msg:
-                    logger.debug(f"Received during START wait: ID=0x{msg.arbitration_id:08X} Data={msg.data.hex()}")
-                    # Match Class 1, Index 0 (Control) - ignore lower 6 bits (Device ID) for the initial check
-                    if (msg.arbitration_id & 0x1FFFFFC0) == (0x0A2A0400) and len(msg.data) >= 2:
-                        if msg.data[0] == 0xAA and msg.data[1] == 0x00:
-                            actual_dev_id = msg.arbitration_id & 0x3F
-                            if actual_dev_id != dev_id:
-                                logger.warning(f"Received ACK from Device ID {actual_dev_id} while targeting {dev_id}")
-                            logger.info(f"Received ACK for START from Device ID {actual_dev_id}")
-                            ack_received = True
-                            break
+            for attempt in range(5):
+                logger.info(f"Sending CMD_START to ID 0x{CTRL_ID:08X} (Attempt {attempt+1})")
+                self.bus.send(can.Message(arbitration_id=CTRL_ID, data=[0x01], is_extended_id=True))
+                
+                # Wait for ACK (0xAA 0x00 or 0xAA 0x01)
+                start_time = time.time()
+                while time.time() - start_time < 0.5: # 500ms timeout per attempt
+                    msg = wait_for_msg(0.1)
+                    if msg:
+                        logger.debug(f"Received during START wait: ID=0x{msg.arbitration_id:08X} Data={msg.data.hex()}")
+                        # Match Class 1, Index 0 (Control) - ignore lower 6 bits (Device ID)
+                        if (msg.arbitration_id & 0x1FFFFFC0) == (0x0A2A0400) and len(msg.data) >= 2:
+                            if msg.data[0] == 0xAA and msg.data[1] == 0x00:
+                                actual_dev_id = msg.arbitration_id & 0x3F
+                                logger.info(f"Received ACK for START from Device ID {actual_dev_id}")
+                                ack_received = True
+                                break
+                            elif msg.data[0] == 0xAA and msg.data[1] == 0x01:
+                                logger.info(f"App detected. Transitioning to bootloader. Waiting 1.5s...")
+                                self.update_status.set("Resetting device...")
+                                time.sleep(1.5)
+                                break # Exit inner loop to retry START command
+                    if ack_received: break
+                if ack_received: break
             
             if not ack_received:
                 logger.error("Failed to receive ACK for START command")

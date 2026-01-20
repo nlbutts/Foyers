@@ -28,6 +28,8 @@
 #include <string.h>
 #include "stm32g0xx_ll_adc.h"
 #include <stdio.h>
+#include "bp_can_api.h"
+#include "version.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,48 +38,6 @@
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-/*
- *                                      Example
- *        Speed Control Mode Disable from Luminary Micro Jaguar Speed Controller (dev # 4)
- *
- * Field      | Device Type | Manufacturer Code      |      API Class   | Index      | Device Number |
- * Value      |      2      |         2              |          1       |   1        |       4       |
- *            |             |                        |               API             |               |
- *            +-------------+------------------------+------------------+------------+---------------+
- * Bits       | 0| 0| 0| 1| 0 | 0| 0| 0| 0| 0| 0| 1| 0 | 0| 0| 0| 0| 0| 1 | 0| 0| 0| 1 | 0| 0| 0| 1| 0| 0 |
- * Bit Pos    |28|27|26|25|24 |23|22|21|20|19|18|17|16 |15|14|13|12|11|10 | 9| 8| 7| 6 | 5| 4| 3| 2| 1| 0 |
- */
-#define WPILIB_DEVICE_TYPE 	               10 << 24 // Miscellaneous Device  
-#define WPILIB_MFG_CODE 	                 42 << 16 // Make some random number. 42 is the answer to life the universe and everything
-#define WPILIB_API_CLASS	                  5 << 10 // Status
-#define WPILIB_API_INDEX_GENERAL_STATUS     0 << 6
-#define WPILIB_API_INDEX_TOF_STATUS         1 << 6
-#define WPILIB_API_INDEX_ENCODER_STATUS     2 << 6
-#define WPILIB_DEV_NUM		                  0 // TODO this should be configurable per device
-#define BACK_PORCH_GENERAL_STATUS     WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_GENERAL_STATUS | WPILIB_DEV_NUM
-#define BACK_PORCH_TOF_STATUS         WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_TOF_STATUS | WPILIB_DEV_NUM
-#define BACK_PORCH_ENCODER_STATUS     WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_ENCODER_STATUS | WPILIB_DEV_NUM
-
-/*
- General Status message data format:
-    Byte 0-3: Unique ID () using the MurmurHash3 algorithm on the device's serial number (little endian)
-    Byte 4: Current in mA (0-255mA)
-    Byte 5-6: Input Voltage in mV (0-65535mV)
-    Byte 7: Temperature in degrees Celsius (redundant for testing)
-
- TOF message data format:
-    Byte 0 - API Status from ST TOF
-    Byte 2-3: Distance in mm (little endian)
-    Byte 4-5: ambient Mcps (little endian)
-    Byte 6-7: signal Mcps (little endian)
-
-  Through Bore Encoder status message data format:
-    Byte 0-1: Encoder 1 Absolete position in 0.01 degrees (little endian)
-    Byte 2-3: Encoder 1 Incremental position in 0.01 degrees (little endian)
-    Byte 4-5: Encoder 2 Absolete position in 0.01 degrees (little endian)
-    Byte 6-7: Encoder 2 Incremental position in 0.01 degrees (little endian)
-    */
 
 /* USER CODE END PD */
 
@@ -94,6 +54,9 @@ FDCAN_HandleTypeDef hfdcan1;
 I2C_HandleTypeDef hi2c1;
 
 IWDG_HandleTypeDef hiwdg;
+
+volatile uint32_t can_rx_msg_count = 0;
+volatile uint32_t last_rx_id = 0;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -262,6 +225,7 @@ int main(void)
   MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
   HAL_ADCEx_Calibration_Start(&hadc1);
+  HAL_IWDG_Refresh(&hiwdg); // Early refresh
 
   HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, 1);
   HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, 1);
@@ -467,7 +431,7 @@ static void MX_FDCAN1_Init(void)
   hfdcan1.Init.DataTimeSeg1 = 1;
   hfdcan1.Init.DataTimeSeg2 = 1;
   hfdcan1.Init.StdFiltersNbr = 0;
-  hfdcan1.Init.ExtFiltersNbr = 0;
+  hfdcan1.Init.ExtFiltersNbr = 1;
   hfdcan1.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
   if (HAL_FDCAN_Init(&hfdcan1) != HAL_OK)
   {
@@ -887,6 +851,19 @@ void startCanTask(void *argument)
 {
   /* USER CODE BEGIN startCanTask */
   HAL_GPIO_WritePin(CAN_STB_GPIO_Port, CAN_STB_Pin, GPIO_PIN_RESET);
+
+  HAL_FDCAN_Stop(&hfdcan1); // Ensure it's stopped before configuring filter
+
+  FDCAN_FilterTypeDef sFilterConfig;
+  sFilterConfig.IdType = FDCAN_EXTENDED_ID;
+  sFilterConfig.FilterIndex = 0;
+  sFilterConfig.FilterType = FDCAN_FILTER_MASK;
+  sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+  // Temporary: Accept ALL messages for debugging
+  sFilterConfig.FilterID1 = 0;
+  sFilterConfig.FilterID2 = 0;
+  HAL_FDCAN_ConfigFilter(&hfdcan1, &sFilterConfig);
+
   HAL_FDCAN_Start(&hfdcan1);
 
   HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
@@ -913,6 +890,17 @@ void startCanTask(void *argument)
   txGeneralStatus.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
   txGeneralStatus.MessageMarker = 0;
 
+  FDCAN_TxHeaderTypeDef txSwVersion;
+  txSwVersion.Identifier = BACK_PORCH_SW_VERSION;
+  txSwVersion.IdType = FDCAN_EXTENDED_ID;
+  txSwVersion.TxFrameType = FDCAN_DATA_FRAME;
+  txSwVersion.DataLength = FDCAN_DLC_BYTES_8;
+  txSwVersion.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+  txSwVersion.BitRateSwitch = FDCAN_BRS_OFF;
+  txSwVersion.FDFormat = FDCAN_CLASSIC_CAN;
+  txSwVersion.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+  txSwVersion.MessageMarker = 0;
+
   FDCAN_TxHeaderTypeDef txEncStatus;
   txEncStatus.Identifier = BACK_PORCH_ENCODER_STATUS;
   txEncStatus.IdType = FDCAN_EXTENDED_ID;
@@ -933,6 +921,42 @@ void startCanTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
+    // Handle Incoming CAN messages
+    FDCAN_RxHeaderTypeDef rxHeader;
+    uint8_t rxData[8];
+    while (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &rxHeader, rxData) == HAL_OK)
+    {
+        can_rx_msg_count++;
+        last_rx_id = rxHeader.Identifier;
+        HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+
+        uint32_t apiClass = (rxHeader.Identifier >> 10) & 0x3F;
+        if (apiClass == 1) { // Control Class
+            uint8_t cmd = rxData[0];
+            if (cmd == CAN_CMD_START) {
+                // Send ACK 0xAA 0x01 to indicate app-to-bootloader transition
+                FDCAN_TxHeaderTypeDef txHeader;
+                txHeader.Identifier = rxHeader.Identifier;
+                txHeader.IdType = FDCAN_EXTENDED_ID;
+                txHeader.TxFrameType = FDCAN_DATA_FRAME;
+                txHeader.DataLength = FDCAN_DLC_BYTES_8;
+                txHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+                txHeader.BitRateSwitch = FDCAN_BRS_OFF;
+                txHeader.FDFormat = FDCAN_CLASSIC_CAN;
+                txHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+                txHeader.MessageMarker = 0;
+                
+                uint8_t ackData[8] = {0xAA, 0x01, 0, 0, 0, 0, 0, 0};
+                HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txHeader, ackData);
+                
+                // Set Magic Word and Reboot (survives bootloader startup at this address)
+                *((uint32_t *)0x2000C000) = 0xDEADBEEF;
+                osDelay(100);
+                HAL_NVIC_SystemReset(); 
+            }
+        }
+    }
+
     uint32_t vref_mv = 3300;
     uint32_t current_mA = 0;
     uint16_t input_voltage_mv = 0;
@@ -1014,6 +1038,17 @@ void startCanTask(void *argument)
 
     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txGeneralStatus, TxData);
 
+    // Populate TxData for SW Version
+    TxData[0] = (uint8_t)(hashed_id & 0xFF);
+    TxData[1] = (uint8_t)((hashed_id >> 8) & 0xFF);
+    TxData[2] = (uint8_t)((hashed_id >> 16) & 0xFF);
+    TxData[3] = (uint8_t)((hashed_id >> 24) & 0xFF);
+    TxData[4] = 1 | (MAJOR_VERSION << 1) | (MINOR_VERSION << 4);
+    TxData[5] = (uint8_t)(BUILD_NUMBER & 0xFF);
+    TxData[6] = (uint8_t)((BUILD_NUMBER >> 8) & 0xFF);
+    TxData[7] = (uint8_t)((BUILD_NUMBER >> 16) & 0xFF);
+    HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txSwVersion, TxData);
+
     TxData[0] = (uint8_t)(pulse_width_1000deg & 0xFF);
     TxData[1] = (uint8_t)((pulse_width_1000deg >> 8) & 0xFF);
     
@@ -1073,6 +1108,13 @@ void StartMonTask(void *argument)
     sprintf(heap_str, "Free Heap: %u bytes\r\n", (unsigned int)xPortGetFreeHeapSize());
     uart5_puts(heap_str);
     
+    snprintf(stats_buffer, sizeof(stats_buffer),
+             "\r\n\033[1;33m--- CAN Debug ---\033[0m\r\n"
+             "CAN Rx Count: %lu\r\n"
+             "Last Rx ID: 0x%08lX\r\n",
+             (unsigned long)can_rx_msg_count, (unsigned long)last_rx_id);
+    uart5_puts(stats_buffer);
+
     uart5_puts("\033[1;36m============================================================\033[0m\r\n");
   }
   /* USER CODE END StartMonTask */

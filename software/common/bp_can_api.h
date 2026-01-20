@@ -37,15 +37,13 @@
 #define CAN_CMD_REBOOT 0x03
 
 #define BOOTLOADER_START                                                       \
-  (WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS_CONTROL |           \
-   CAN_CMD_START)
-#define BOOTLOADER_COMMIT                                                      \
-  (WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS_CONTROL |           \
-   CAN_CMD_COMMIT)
-#define BOOTLOADER_REBOOT                                                      \
-  (WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS_CONTROL |           \
-   CAN_CMD_REBOOT)
+  (WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS_CONTROL)
+#define BOOTLOADER_COMMIT BOOTLOADER_START
+#define BOOTLOADER_REBOOT BOOTLOADER_START
 
+#define BACK_PORCH_SW_VERSION                                                  \
+  (WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS_STATUS |            \
+   WPILIB_API_INDEX_SW_VERSION)
 #define BACK_PORCH_GENERAL_STATUS                                              \
   (WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS_STATUS |            \
    WPILIB_API_INDEX_GENERAL_STATUS)

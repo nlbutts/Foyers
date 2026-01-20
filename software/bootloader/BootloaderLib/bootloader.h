@@ -10,8 +10,8 @@
 #define WPILIB_DEVICE_ID (0) // Default Device ID
 
 /* Magic Word for Bootloader Entry */
+#define MAGIC_WORD_ADDR ((uint32_t *)0x2000C000)
 #define HEAD_MAGIC_WORD 0xDEADBEEF
-#define MAGIC_WORD_ADDR ((uint32_t *)&_magic_word_start)
 
 /* Memory Map Constants */
 #define APP_START_ADDR 0x08008000

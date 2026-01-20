@@ -31,6 +31,15 @@ message("Build type: " ${CMAKE_BUILD_TYPE})
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
 
+# Automatic build number increment logic
+find_package(Python3 REQUIRED)
+add_custom_target(
+    IncrementBuildNumber
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/../common/increment_build.py" "${CMAKE_CURRENT_SOURCE_DIR}/Core/Inc/version.h"
+    COMMENT "Incrementing build number in version.h"
+    VERBATIM
+)
+
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 
@@ -67,6 +76,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 
     # Add user defined libraries
 )
+
+add_dependencies(${CMAKE_PROJECT_NAME} IncrementBuildNumber)
 
 # Generate binary file
 add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD

@@ -35,7 +35,7 @@ enable_language(C ASM)
 find_package(Python3 REQUIRED)
 add_custom_target(
     IncrementBuildNumber
-    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/cmake/increment_build.py" "${CMAKE_SOURCE_DIR}/BootloaderLib/version.h"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/../common/increment_build.py" "${CMAKE_SOURCE_DIR}/BootloaderLib/version.h"
     COMMENT "Incrementing build number in version.h"
     VERBATIM
 )
