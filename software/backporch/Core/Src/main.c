@@ -952,7 +952,7 @@ void startCanTask(void *argument)
                 // Set Magic Word and Reboot (survives bootloader startup at this address)
                 *((uint32_t *)0x2000C000) = 0xDEADBEEF;
                 osDelay(100);
-                HAL_NVIC_SystemReset(); 
+                HAL_NVIC_SystemReset();   
             }
         }
     }

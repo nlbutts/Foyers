@@ -172,10 +172,15 @@ void Bootloader_Loop(void) {
         Log("Running bootloader...");
     }
 
-    /* State Machine Housekeeping if needed */
+    /* State Machine Housekeeping */
     switch (currentState) {
         case BOOT_STATE_VERIFYING:
-        case BOOT_STATE_FLASHING:
+             VerifyAndFlash();
+             break;
+        case BOOT_STATE_COMPLETE:
+             Log("Update Complete. Resetting...");
+             HAL_Delay(200); // Wait for logs and CAN message to clear
+             HAL_NVIC_SystemReset();
              break;
         default:
             break;
@@ -219,8 +224,7 @@ static void ProcessControlPacket(uint8_t* data) {
             if (currentState == BOOT_STATE_RECEIVING) {
                 memcpy(&expectedCrc, &data[1], 4);
                 Log("CMD_COMMIT: Expected CRC=0x%08X, Size=%lu", expectedCrc, bytesReceived);
-                currentState = BOOT_STATE_VERIFYING;
-                VerifyAndFlash();
+                currentState = BOOT_STATE_VERIFYING; // Trigger processing in Bootloader_Loop
             } else {
                 Log("CMD_COMMIT ignored: not in RECEIVING state");
             }
@@ -267,12 +271,15 @@ static void VerifyAndFlash(void) {
         EraseInitStruct.Page = 16;
         EraseInitStruct.NbPages = 48; // 96KB
         
+        // Erase is slow, feed IWDG frequently
+        HAL_IWDG_Refresh(&hiwdg);
         if (HAL_FLASHEx_Erase(&EraseInitStruct, &PageError) != HAL_OK) {
              Log("Erase Error at page %lu", PageError);
              currentState = BOOT_STATE_ERROR;
              HAL_FLASH_Lock();
              return;
         }
+        HAL_IWDG_Refresh(&hiwdg);
 
         Log("Programming %lu bytes to Flash...", bytesReceived);
         for (uint32_t i = 0; i < bytesReceived; i += 8) {
@@ -310,13 +317,8 @@ static void VerifyAndFlash(void) {
         }
         
         HAL_FLASH_Lock();
-        Log("Update Complete. Resetting...");
-        currentState = BOOT_STATE_IDLE;
-        SendStatus(0x01, 0); // Success
-        
-        HAL_Delay(100);
-        NVIC_SystemReset();
-        
+        SendStatus(0x01, 0); // Success message
+        currentState = BOOT_STATE_COMPLETE; // Trigger reset in Bootloader_Loop
     } else {
         Log("CRC MISMATCH! Expected 0x%08X", expectedCrc);
         currentState = BOOT_STATE_ERROR;
