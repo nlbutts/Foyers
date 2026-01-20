@@ -4553,7 +4553,7 @@
 		(path "/c5077c83-912c-4ab9-9918-fb566c90a108/1180fed1-a0c4-4959-8f4b-b9da2fe56251")
 		(sheetname "/IO/")
 		(sheetfile "IO.kicad_sch")
-		(attr through_hole dnp)
+		(attr through_hole)
 		(fp_line
 			(start -3.199999 5.034001)
 			(end -3.199999 -0.849998)
@@ -13949,7 +13949,7 @@
 		(path "/c5077c83-912c-4ab9-9918-fb566c90a108/f55562df-7b54-4f31-b530-b577d16a0dc7")
 		(sheetname "/IO/")
 		(sheetfile "IO.kicad_sch")
-		(attr through_hole dnp)
+		(attr through_hole)
 		(fp_line
 			(start -3.199999 5.034001)
 			(end -3.199999 -0.849998)
@@ -16323,7 +16323,7 @@
 		(path "/c5077c83-912c-4ab9-9918-fb566c90a108/966abda9-958d-4d2f-ad07-72ede2879392")
 		(sheetname "/IO/")
 		(sheetfile "IO.kicad_sch")
-		(attr through_hole dnp)
+		(attr through_hole)
 		(fp_line
 			(start 6.05 -4.149999)
 			(end 6.05 10.349999)

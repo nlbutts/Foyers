@@ -28,7 +28,6 @@
 #include <string.h>
 #include "stm32g0xx_ll_adc.h"
 #include <stdio.h>
-#include "bp_can_api.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,6 +36,48 @@
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+/*
+ *                                      Example
+ *        Speed Control Mode Disable from Luminary Micro Jaguar Speed Controller (dev # 4)
+ *
+ * Field      | Device Type | Manufacturer Code      |      API Class   | Index      | Device Number |
+ * Value      |      2      |         2              |          1       |   1        |       4       |
+ *            |             |                        |               API             |               |
+ *            +-------------+------------------------+------------------+------------+---------------+
+ * Bits       | 0| 0| 0| 1| 0 | 0| 0| 0| 0| 0| 0| 1| 0 | 0| 0| 0| 0| 0| 1 | 0| 0| 0| 1 | 0| 0| 0| 1| 0| 0 |
+ * Bit Pos    |28|27|26|25|24 |23|22|21|20|19|18|17|16 |15|14|13|12|11|10 | 9| 8| 7| 6 | 5| 4| 3| 2| 1| 0 |
+ */
+#define WPILIB_DEVICE_TYPE 	               10 << 24 // Miscellaneous Device  
+#define WPILIB_MFG_CODE 	                 42 << 16 // Make some random number. 42 is the answer to life the universe and everything
+#define WPILIB_API_CLASS	                  5 << 10 // Status
+#define WPILIB_API_INDEX_GENERAL_STATUS     0 << 6
+#define WPILIB_API_INDEX_TOF_STATUS         1 << 6
+#define WPILIB_API_INDEX_ENCODER_STATUS     2 << 6
+#define WPILIB_DEV_NUM		                  0 // TODO this should be configurable per device
+#define BACK_PORCH_GENERAL_STATUS     WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_GENERAL_STATUS | WPILIB_DEV_NUM
+#define BACK_PORCH_TOF_STATUS         WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_TOF_STATUS | WPILIB_DEV_NUM
+#define BACK_PORCH_ENCODER_STATUS     WPILIB_DEVICE_TYPE | WPILIB_MFG_CODE | WPILIB_API_CLASS | WPILIB_API_INDEX_ENCODER_STATUS | WPILIB_DEV_NUM
+
+/*
+ General Status message data format:
+    Byte 0-3: Unique ID () using the MurmurHash3 algorithm on the device's serial number (little endian)
+    Byte 4: Current in mA (0-255mA)
+    Byte 5-6: Input Voltage in mV (0-65535mV)
+    Byte 7: Temperature in degrees Celsius (redundant for testing)
+
+ TOF message data format:
+    Byte 0 - API Status from ST TOF
+    Byte 2-3: Distance in mm (little endian)
+    Byte 4-5: ambient Mcps (little endian)
+    Byte 6-7: signal Mcps (little endian)
+
+  Through Bore Encoder status message data format:
+    Byte 0-1: Encoder 1 Absolete position in 0.01 degrees (little endian)
+    Byte 2-3: Encoder 1 Incremental position in 0.01 degrees (little endian)
+    Byte 4-5: Encoder 2 Absolete position in 0.01 degrees (little endian)
+    Byte 6-7: Encoder 2 Incremental position in 0.01 degrees (little endian)
+    */
 
 /* USER CODE END PD */
 
@@ -51,6 +92,8 @@ ADC_HandleTypeDef hadc1;
 FDCAN_HandleTypeDef hfdcan1;
 
 I2C_HandleTypeDef hi2c1;
+
+IWDG_HandleTypeDef hiwdg;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -107,6 +150,7 @@ static void MX_I2C1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_USART5_UART_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_IWDG_Init(void);
 void StartDefaultTask(void *argument);
 void startCanTask(void *argument);
 void StartMonTask(void *argument);
@@ -215,6 +259,7 @@ int main(void)
   MX_TIM1_Init();
   MX_USART5_UART_Init();
   MX_TIM2_Init();
+  MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
   HAL_ADCEx_Calibration_Start(&hadc1);
 
@@ -299,11 +344,13 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_HSI48;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI
+                              |RCC_OSCILLATORTYPE_HSI48;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.HSIDiv = RCC_HSI_DIV1;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV1;
@@ -481,6 +528,35 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief IWDG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_IWDG_Init(void)
+{
+
+  /* USER CODE BEGIN IWDG_Init 0 */
+
+  /* USER CODE END IWDG_Init 0 */
+
+  /* USER CODE BEGIN IWDG_Init 1 */
+
+  /* USER CODE END IWDG_Init 1 */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_64;
+  hiwdg.Init.Window = 4095;
+  hiwdg.Init.Reload = 4095;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG_Init 2 */
+
+  /* USER CODE END IWDG_Init 2 */
+
+}
+
+/**
   * @brief TIM1 Initialization Function
   * @param None
   * @retval None
@@ -597,7 +673,6 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 0 */
 
-  TIM_Encoder_InitTypeDef sConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_IC_InitTypeDef sConfigIC = {0};
 
@@ -611,19 +686,6 @@ static void MX_TIM3_Init(void)
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_IC_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
-  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC1Filter = 0;
-  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC2Filter = 0;
-  if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
   {
     Error_Handler();
   }
@@ -810,11 +872,6 @@ void StartDefaultTask(void *argument)
   for(;;)
   {
     osDelay(100);
-    // HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
-    // HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
-    // HAL_GPIO_TogglePin(SYS_STATUS_GPIO_Port, SYS_STATUS_Pin);
-    // HAL_GPIO_TogglePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin);
-    txstring("Hello from USB CDC!\r\n");
   }
   /* USER CODE END 5 */
 }
@@ -830,16 +887,6 @@ void startCanTask(void *argument)
 {
   /* USER CODE BEGIN startCanTask */
   HAL_GPIO_WritePin(CAN_STB_GPIO_Port, CAN_STB_Pin, GPIO_PIN_RESET);
-
-  FDCAN_FilterTypeDef sFilterConfig;
-  sFilterConfig.IdType = FDCAN_EXTENDED_ID;
-  sFilterConfig.FilterIndex = 0;
-  sFilterConfig.FilterType = FDCAN_FILTER_MASK;
-  sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-  sFilterConfig.FilterID1 = WPILIB_HEARTBEAT_ID;
-  sFilterConfig.FilterID2 = 0x1FFFFFFF; // Exact match
-  HAL_FDCAN_ConfigFilter(&hfdcan1, &sFilterConfig);
-
   HAL_FDCAN_Start(&hfdcan1);
 
   HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
@@ -883,29 +930,9 @@ void startCanTask(void *argument)
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
 
-  uint32_t last_heartbeat_tick = 0;
-
   /* Infinite loop */
   for(;;)
   {
-    // Receive Heartbeat
-    FDCAN_RxHeaderTypeDef rxHeader;
-    uint8_t rxData[8];
-    while (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &rxHeader, rxData) == HAL_OK)
-    {
-      if (rxHeader.Identifier == WPILIB_HEARTBEAT_ID)
-      {
-        last_heartbeat_tick = osKernelGetTickCount();
-      }
-    }
-
-    // Update LED
-    if (last_heartbeat_tick > 0 && (osKernelGetTickCount() - last_heartbeat_tick) < 500) {
-        HAL_GPIO_WritePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin, GPIO_PIN_RESET);
-    } else {
-        HAL_GPIO_WritePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin, GPIO_PIN_SET);
-    }
-
     uint32_t vref_mv = 3300;
     uint32_t current_mA = 0;
     uint16_t input_voltage_mv = 0;
@@ -1018,6 +1045,7 @@ void StartMonTask(void *argument)
   for(;;)
   {
     osDelay(2000);
+    HAL_IWDG_Refresh(&hiwdg);
     
     // Clear screen and home cursor
     uart5_puts("\033[2J\033[H");

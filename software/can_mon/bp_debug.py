@@ -148,9 +148,13 @@ class CanMonitorApp:
                 msg = wait_for_msg(0.1)
                 if msg:
                     logger.debug(f"Received during START wait: ID=0x{msg.arbitration_id:08X} Data={msg.data.hex()}")
-                    if msg.arbitration_id == CTRL_ID and len(msg.data) >= 2:
+                    # Match Class 1, Index 0 (Control) - ignore lower 6 bits (Device ID) for the initial check
+                    if (msg.arbitration_id & 0x1FFFFFC0) == (0x0A2A0400) and len(msg.data) >= 2:
                         if msg.data[0] == 0xAA and msg.data[1] == 0x00:
-                            logger.info("Received ACK for START")
+                            actual_dev_id = msg.arbitration_id & 0x3F
+                            if actual_dev_id != dev_id:
+                                logger.warning(f"Received ACK from Device ID {actual_dev_id} while targeting {dev_id}")
+                            logger.info(f"Received ACK for START from Device ID {actual_dev_id}")
                             ack_received = True
                             break
             
@@ -188,15 +192,19 @@ class CanMonitorApp:
                 msg = wait_for_msg(0.1)
                 if msg:
                     logger.debug(f"Received during COMMIT wait: ID=0x{msg.arbitration_id:08X} Data={msg.data.hex()}")
-                    if msg.arbitration_id == CTRL_ID and len(msg.data) >= 2:
+                    if (msg.arbitration_id & 0x1FFFFFC0) == (0x0A2A0400) and len(msg.data) >= 2:
                         if msg.data[0] == 0xAA:
+                            actual_dev_id = msg.arbitration_id & 0x3F
+                            if actual_dev_id != dev_id:
+                                logger.warning(f"Received ACK from Device ID {actual_dev_id} while targeting {dev_id}")
+                            
                             if msg.data[1] == 0x01:
-                                logger.info("Update Successful! Device is rebooting.")
+                                logger.info(f"Update Successful! (from ID {actual_dev_id})")
                                 success = True
                                 self.update_status.set("Update Successful! Rebooting...")
                                 break
                             elif msg.data[1] == 0xEE:
-                                logger.error("Update failed: CRC Mismatch reported by device")
+                                logger.error(f"Update failed: CRC Mismatch reported by device {actual_dev_id}")
                                 self.update_status.set("Error: CRC Mismatch")
                                 break
 
@@ -250,8 +258,6 @@ class CanMonitorApp:
             
         device = self.devices[dev_id]
         device["last_seen"] = time.time()
-
-        logger.info(f"msg: {msg} api_id: {api_id}")
 
         # Route based on API
         if api_id == 0x50: # Class 5, Index 0 (SW Version)
