@@ -944,7 +944,7 @@ void startCanTask(void *argument)
                 txHeader.BitRateSwitch = FDCAN_BRS_OFF;
                 txHeader.FDFormat = FDCAN_CLASSIC_CAN;
                 txHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
-                txHeader.MessageMarker = 0;
+                txHeader.MessageMarker = 0; 
                 
                 uint8_t ackData[8] = {0xAA, 0x01, 0, 0, 0, 0, 0, 0};
                 HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txHeader, ackData);
@@ -952,7 +952,7 @@ void startCanTask(void *argument)
                 // Set Magic Word and Reboot (survives bootloader startup at this address)
                 *((uint32_t *)0x2000C000) = 0xDEADBEEF;
                 osDelay(100);
-                HAL_NVIC_SystemReset();   
+                HAL_NVIC_SystemReset();    
             }
         }
     }

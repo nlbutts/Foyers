@@ -30,6 +30,67 @@ static void ProcessDataPacket(uint8_t* data, uint32_t len);
 static void VerifyAndFlash(void);
 static void SendStatus(uint8_t status, uint32_t data);
 
+__attribute__((section(".RamFunc"), noinline))
+static void FlashBootloaderFromRAM(uint8_t* src, uint32_t size) {
+    // Disable interrupts to ensure atomicity and avoid vector table access during erase
+    __disable_irq();
+
+    // 1. Unlock Flash
+    if (FLASH->CR & FLASH_CR_LOCK) {
+        FLASH->KEYR = 0x45670123;
+        FLASH->KEYR = 0xCDEF89AB;
+    }
+
+    // 2. Erase pages 0 to 14 (30KB bootloader area)
+    for (uint32_t page = 0; page <= 14; page++) {
+        // Clear error flags
+        FLASH->SR = FLASH_SR_EOP | FLASH_SR_OPERR | FLASH_SR_WRPERR | FLASH_SR_PGAERR | FLASH_SR_PGSERR | FLASH_SR_MISERR | FLASH_SR_FASTERR;
+
+        // Set page erase
+        FLASH->CR = FLASH_CR_PER | (page << FLASH_CR_PNB_Pos);
+        FLASH->CR |= FLASH_CR_STRT;
+
+        // Wait for busy (using BSY1 for G0B1)
+        while (FLASH->SR & FLASH_SR_BSY1);
+        
+        // Feed IWDG
+        IWDG->KR = 0xAAAA;
+    }
+
+    // 3. Program the new bootloader (8 bytes at a time)
+    for (uint32_t i = 0; i < size; i += 8) {
+        uint32_t addr = 0x08000000 + i;
+        uint32_t data_low = *(uint32_t*)(src + i);
+        uint32_t data_high = *(uint32_t*)(src + i + 4);
+
+        // Clear error flags
+        FLASH->SR = FLASH_SR_EOP | FLASH_SR_OPERR | FLASH_SR_WRPERR | FLASH_SR_PGAERR | FLASH_SR_PGSERR | FLASH_SR_MISERR | FLASH_SR_FASTERR;
+
+        // Set programming mode
+        FLASH->CR = FLASH_CR_PG;
+
+        // Write first word
+        *(__IO uint32_t*)addr = data_low;
+        // Write second word
+        *(__IO uint32_t*)(addr + 4) = data_high;
+
+        // Wait for busy
+        while (FLASH->SR & FLASH_SR_BSY1);
+
+        // Feed IWDG
+        IWDG->KR = 0xAAAA;
+    }
+
+    // 4. Lock Flash
+    FLASH->CR |= FLASH_CR_LOCK;
+
+    // 5. System Reset
+    SCB->AIRCR = ((0x5FAUL << SCB_AIRCR_VECTKEY_Pos) |
+                 SCB_AIRCR_SYSRESETREQ_Msk);
+
+    while (1);
+}
+
 /* API Command Definitions (API Class 1) */
 #define CMD_START       0x01 // Payload: [Reserved]
 #define CMD_COMMIT      0x02 // Payload: [CRC32 (4 bytes)]
@@ -43,6 +104,9 @@ static void Log(const char* format, ...) {
     int len = vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
     if (len > 0) {
+        if (len >= (int)sizeof(buf)) {
+            len = (int)sizeof(buf) - 1;
+        }
         HAL_UART_Transmit(&huart5, (uint8_t*)buf, len, 100);
         HAL_UART_Transmit(&huart5, (uint8_t*)"\r\n", 2, 10);
     }
@@ -169,7 +233,7 @@ void Bootloader_Loop(void) {
     if (now - lastVersionSendTime >= 100) {
         lastVersionSendTime = now;
         SendVersion();
-        Log("Running bootloader...");
+        //Log("Running bootloader...");
     }
 
     /* State Machine Housekeeping */
@@ -189,10 +253,22 @@ void Bootloader_Loop(void) {
 
 void Bootloader_RxCallback(void) {
     FDCAN_RxHeaderTypeDef RxHeader;
-    uint8_t RxData[8];
+    uint8_t RxData[64]; // Increased to 64 to safely handle FDCAN frames
 
     if (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &RxHeader, RxData) != HAL_OK) {
         return;
+    }
+
+    // Convert DLC to actual byte length
+    uint32_t len = 0;
+    if (RxHeader.DataLength <= 8) {
+        len = RxHeader.DataLength;
+    } else {
+        // FDCAN DLC lookup
+        static const uint8_t dlcToLen[] = {0,1,2,3,4,5,6,7,8,12,16,20,24,32,48,64};
+        if (RxHeader.DataLength <= 15) {
+            len = dlcToLen[RxHeader.DataLength];
+        }
     }
 
     // Save Device ID for response (lower 6 bits)
@@ -202,9 +278,10 @@ void Bootloader_RxCallback(void) {
     uint32_t apiClass = (RxHeader.Identifier >> 10) & 0x3F;
 
     if (apiClass == 1) {
+        Log("Processed Control Packet CMD=0x%02X", RxData[0]);
         ProcessControlPacket(RxData);
     } else if (apiClass == 2) {
-        ProcessDataPacket(RxData, RxHeader.DataLength);
+        ProcessDataPacket(RxData, len);
     }
 }
 
@@ -217,6 +294,7 @@ static void ProcessControlPacket(uint8_t* data) {
             Log("CMD_START received. Resetting buffer.");
             currentState = BOOT_STATE_RECEIVING;
             bytesReceived = 0;
+            memset(pRamBuffer, 0, APP_SIZE_MAX); // Clear buffer for clean programming
             SendStatus(0x00, 0); // OK
             break;
 
@@ -258,7 +336,22 @@ static void VerifyAndFlash(void) {
     Log("Calculated CRC: 0x%08X", calculatedCrc);
 
     if (calculatedCrc == expectedCrc) {
-        Log("CRC Match! Starting Flash Erase...");
+        Log("CRC Match! Checking image type...");
+        
+        // Inspect Vector Table: Word 0 is SP, Word 1 is Reset Vector
+        uint32_t resetVector = *(uint32_t*)(pRamBuffer + 4);
+        
+        // Bootloader area is 0x08000000 - 0x080077FF (Pages 0-14)
+        if (resetVector >= 0x08000000 && resetVector < 0x08007800) {
+            Log("Detected Bootloader Image (Reset Vector: 0x%08X)", resetVector);
+            Log("Jumping to RAM for self-reprogramming...");
+            SendStatus(0x02, 0); // Status 0x02: Self-updating
+            HAL_Delay(100);
+            FlashBootloaderFromRAM(pRamBuffer, bytesReceived);
+            // Should not return
+        }
+
+        Log("Detected Application Image. Starting Flash Erase...");
         currentState = BOOT_STATE_FLASHING;
         
         FLASH_EraseInitTypeDef EraseInitStruct;

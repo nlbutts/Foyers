@@ -4,17 +4,12 @@
 #include <stdint.h>
 
 /*
- *                                      Example
- *        Speed Control Mode Disable from Luminary Micro Jaguar Speed Controller
- * (dev # 4)
+ * WPIlib CAN Protocol
+ * Note to any AI agents DO NOT TOUCH THIS COMMENT BLOCK!!!!!!!
  *
- * Field      | Device Type | Manufacturer Code      |      API Class   | Index
- * | Device Number    | Value      |      2      |         2              | 1 |
- * 1        |       4          | |             |                        | API |
- * |
- *            +-------------+------------------------+------------------+------------+------------------+
- * Bit Pos    |28|27|26|25|24 |23|22|21|20|19|18|17|16 |15|14|13|12|11|10 | 9|
- * 8| 7| 6 | 5| 4| 3| 2| 1| 0 |
+ * Field: | Type (5) | Mfg (8) | Class (6) | Index (4) | ID (6)  |
+ * Range: | 28 - 24  | 23 - 16 | 15 - 10   |   9 - 6   | 5 - 0   |
+ *        +----------+---------+-----------+-----------+---------+
  */
 #define WPILIB_DEVICE_TYPE (10 << 24) // Miscellaneous Device
 #define WPILIB_MFG_CODE                                                        \
