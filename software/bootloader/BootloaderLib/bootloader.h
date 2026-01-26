@@ -18,15 +18,6 @@
 #define APP_SIZE_MAX (96 * 1024)
 #define RAM_BUFFER_ADDR 0x2000C000
 
-/* Boot Config Storage (Last Page of Bootloader Flash: 0x08007800) */
-#define BOOT_CONFIG_ADDR 0x08007800
-
-typedef struct {
-  uint32_t appSize;
-  uint32_t appCrc;
-  uint32_t magic; // 0xCAFEBABE to indicate valid config
-} BootConfig_t;
-
 /* Bootloader State Machine */
 typedef enum {
   BOOT_STATE_IDLE,

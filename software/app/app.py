@@ -273,13 +273,18 @@ class CanMonitorApp:
             major = (mode_byte >> 1) & 0x07
             minor = (mode_byte >> 4) & 0x0F
             build = struct.unpack("<I", msg.data[4:8])[0] >> 8
+            device["data"]["UniqueID"] = uhash
             device["data"]["Version"] = {"Hash": uhash, "Type": mode_str, "Major": major, "Minor": minor, "Build": build}
+            # Trigger UI update for ID if needed
+            self.update_device_id_display(device, dev_id, uhash)
 
         elif api_id == 0x51: # Class 5, Index 1 (General)
             # Match application's pack format [I B H b] if hash is included, or just the values
             # Based on previous logic assuming [I B H b]:
             uid_hash, current, voltage, temp = struct.unpack("<IBHb", msg.data)
+            device["data"]["UniqueID"] = uid_hash
             device["data"]["General"] = {"Current": current, "Voltage": voltage, "Temp": temp}
+            self.update_device_id_display(device, dev_id, uid_hash)
 
         elif api_id == 0x52: # Class 5, Index 2 (TOF)
             status = msg.data[0]
@@ -288,7 +293,7 @@ class CanMonitorApp:
 
         elif api_id == 0x53: # Class 5, Index 3 (Encoder)
             e1a, e1i, e2a, e2i = struct.unpack("<HhHh", msg.data)
-            device["data"]["Encoder"] = {"Enc1_Abs": e1a/100, "Enc1_Inc": e1i, "Enc2_Abs": e2a/100, "Enc2_Inc": e2i/100}
+            device["data"]["Encoder"] = {"Enc1_Abs": e1a/100, "Enc1_Inc": e1i/100, "Enc2_Abs": e2a/100, "Enc2_Inc": e2i/100}
 
     def create_device(self, dev_id):
         # UI Frame for this device
@@ -308,20 +313,50 @@ class CanMonitorApp:
         row2.pack(fill="x")
         labels["tof"] = ttk.Label(row2, text="Dist: - mm | Status: -", style="Data.TLabel")
         labels["tof"].pack(side="left", padx=5)
-        labels["enc"] = ttk.Label(row2, text="E1: - deg | E2: - deg", style="Data.TLabel")
+        labels["enc"] = ttk.Label(row2, text="E1: -/- deg | E2: -/- deg", style="Data.TLabel")
         labels["enc"].pack(side="left", padx=20)
+
+        # Row 3: ID Assignment
+        row3 = ttk.Frame(frame)
+        row3.pack(fill="x")
+        ttk.Label(row3, text="New ID:").pack(side="left", padx=5)
+        new_id_var = tk.IntVar(value=dev_id)
+        ttk.Spinbox(row3, from_=0, to=63, textvariable=new_id_var, width=5).pack(side="left", padx=5)
+        ttk.Button(row3, text="Assign", command=lambda d=dev_id, v=new_id_var: self.assign_id(d, v)).pack(side="left", padx=5)
+        labels["uid"] = ttk.Label(row3, text="UID: --------", style="Data.TLabel")
+        labels["uid"].pack(side="left", padx=10)
 
         self.devices[dev_id] = {
             "last_seen": time.time(),
             "frame": frame,
             "labels": labels,
             "data": {
+                "UniqueID": 0,
                 "Version": {"Type": "-", "Major": 0, "Minor": 0, "Build": 0},
                 "General": {"Current": 0, "Voltage": 0},
                 "TOF": {"Distance": 0, "Status": 0},
-                "Encoder": {"Enc1_Abs": 0, "Enc2_Abs": 0}
+                "Encoder": {"Enc1_Abs": 0, "Enc1_Inc": 0, "Enc2_Abs": 0, "Enc2_Inc": 0}
             }
         }
+
+    def update_device_id_display(self, device, dev_id, uid_hash):
+        device["labels"]["uid"].config(text=f"UID: {uid_hash:08X}")
+
+    def assign_id(self, old_dev_id, new_id_var):
+        new_id = new_id_var.get() & 0x3F
+        uid = self.devices[old_dev_id]["data"]["UniqueID"]
+        if uid == 0:
+            logger.error("Cannot assign ID: Unique ID not yet discovered")
+            return
+            
+        # WPILib Broadcast for Assign ID: Type=10, Mfg=42, Class=0, Index=0, Dev=0
+        # Arb ID: 0x0A2A0000
+        ASSIGN_ID = 0x0A2A0000
+        payload = list(struct.pack("<I", uid)) + [new_id]
+        while len(payload) < 8: payload.append(0)
+        
+        logger.info(f"Assigning Device ID {new_id} to Unique ID {uid:08X}")
+        self.bus.send(can.Message(arbitration_id=ASSIGN_ID, data=payload, is_extended_id=True))
 
     def calculate_stm32_crc(self, content):
         """
@@ -392,7 +427,7 @@ class CanMonitorApp:
             l["tof"].config(text=f"Dist: {t['Distance']} mm | Status: {t['Status']}")
             
             e = d["Encoder"]
-            l["enc"].config(text=f"E1: {e['Enc1_Abs']:.2f}° | E2: {e['Enc2_Abs']:.2f}°")
+            l["enc"].config(text=f"E1: {e['Enc1_Abs']:.2f}/{e['Enc1_Inc']:.2f}° | E2: {e['Enc2_Abs']:.2f}/{e['Enc2_Inc']:.2f}°")
 
         for dev_id in to_delete:
             logger.info(f"Removing timed out device: {dev_id}")

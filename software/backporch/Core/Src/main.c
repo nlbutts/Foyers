@@ -98,9 +98,88 @@ const osMessageQueueAttr_t canQ_attributes = {
   .name = "canQ"
 };
 /* USER CODE BEGIN PV */
+void uart5_puts(const char * str);
 volatile int32_t pulse_width_1000deg = 0;
 volatile int32_t enc1_count = 0;
 volatile uint8_t enc1_prev_state = 0;
+
+uint8_t g_device_id = 0;
+
+void load_config() {
+    BootConfig_t *cfg = (BootConfig_t *)BOOT_CONFIG_ADDR;
+    if (cfg->magic == BOOT_CONFIG_MAGIC) {
+        g_device_id = cfg->deviceID & 0x3F;
+    } else {
+        g_device_id = 0; // Default
+    }
+}
+
+void save_config(uint8_t new_id) {
+    char msg[64]; // Buffer for debug messages
+    BootConfig_t cfg __attribute__((aligned(8)));
+    
+    // Read existing config
+    memcpy(&cfg, (void*)BOOT_CONFIG_ADDR, sizeof(BootConfig_t));
+    
+    // Update ID and ensure Magic/Structure validity
+    cfg.magic = BOOT_CONFIG_MAGIC;
+    cfg.deviceID = new_id;
+    // Note: appSize and appCrc are preserved from the read
+    
+    sprintf(msg, "Saving config: ID %u to 0x%08X\r\n", new_id, BOOT_CONFIG_ADDR);
+    uart5_puts(msg);
+    osDelay(200);
+
+    /* Critical Section: Disable Interrupts to prevent fetching from Flash while it's busy */
+    __disable_irq();
+
+    HAL_FLASH_Unlock();
+    
+    /* Clear flash error flags */
+    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_OPERR | FLASH_FLAG_PROGERR | FLASH_FLAG_WRPERR | 
+                           FLASH_FLAG_PGAERR | FLASH_FLAG_SIZERR | FLASH_FLAG_PGSERR | 
+                           FLASH_FLAG_MISERR | FLASH_FLAG_FASTERR | FLASH_FLAG_RDERR | 
+                           FLASH_FLAG_OPTVERR);
+
+    HAL_IWDG_Refresh(&hiwdg);
+
+    FLASH_EraseInitTypeDef erase;
+    erase.TypeErase = FLASH_TYPEERASE_PAGES;
+    erase.Banks = FLASH_BANK_1; 
+    erase.Page = BOOT_CONFIG_PAGE; 
+    erase.NbPages = 1;
+    uint32_t pageError;
+    
+    HAL_StatusTypeDef status = HAL_FLASHEx_Erase(&erase, &pageError);
+    HAL_IWDG_Refresh(&hiwdg);
+    if (status != HAL_OK) {
+        HAL_FLASH_Lock();
+        __enable_irq(); // Re-enable interrupts before returning
+        sprintf(msg, "Flash Erase Failed: %d (PageError: %u)\r\n", status, (unsigned int)pageError);
+        uart5_puts(msg);
+        return;
+    }
+    
+    
+    uint64_t *ptr = (uint64_t *)&cfg;
+    for (int i = 0; i < sizeof(BootConfig_t) / 8; i++) {
+        HAL_IWDG_Refresh(&hiwdg);
+        status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, BOOT_CONFIG_ADDR + (i * 8), ptr[i]);
+        if (status != HAL_OK) {
+            HAL_FLASH_Lock();
+            __enable_irq();
+            sprintf(msg, "Flash Program Failed at %d: %d\r\n", i, status);
+            uart5_puts(msg);
+            return;
+        }
+    }
+    
+    HAL_FLASH_Lock();
+    __enable_irq(); // End Critical Section
+
+    uart5_puts("Flash Save Complete\r\n");
+    osDelay(200);
+}
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -226,6 +305,8 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_ADCEx_Calibration_Start(&hadc1);
   HAL_IWDG_Refresh(&hiwdg); // Early refresh
+
+  load_config(); // Load device ID from flash
 
   HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, 1);
   HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, 1);
@@ -880,7 +961,7 @@ void startCanTask(void *argument)
   uint32_t hashed_id = murmur3_32((uint8_t*)uid, 12, 0);
 
   FDCAN_TxHeaderTypeDef txGeneralStatus;
-  txGeneralStatus.Identifier = BACK_PORCH_GENERAL_STATUS;
+  txGeneralStatus.Identifier = BACK_PORCH_GENERAL_STATUS | g_device_id;
   txGeneralStatus.IdType = FDCAN_EXTENDED_ID;
   txGeneralStatus.TxFrameType = FDCAN_DATA_FRAME;
   txGeneralStatus.DataLength = FDCAN_DLC_BYTES_8;
@@ -891,7 +972,7 @@ void startCanTask(void *argument)
   txGeneralStatus.MessageMarker = 0;
 
   FDCAN_TxHeaderTypeDef txSwVersion;
-  txSwVersion.Identifier = BACK_PORCH_SW_VERSION;
+  txSwVersion.Identifier = BACK_PORCH_SW_VERSION | g_device_id;
   txSwVersion.IdType = FDCAN_EXTENDED_ID;
   txSwVersion.TxFrameType = FDCAN_DATA_FRAME;
   txSwVersion.DataLength = FDCAN_DLC_BYTES_8;
@@ -902,7 +983,7 @@ void startCanTask(void *argument)
   txSwVersion.MessageMarker = 0;
 
   FDCAN_TxHeaderTypeDef txEncStatus;
-  txEncStatus.Identifier = BACK_PORCH_ENCODER_STATUS;
+  txEncStatus.Identifier = BACK_PORCH_ENCODER_STATUS | g_device_id;
   txEncStatus.IdType = FDCAN_EXTENDED_ID;
   txEncStatus.TxFrameType = FDCAN_DATA_FRAME;
   txEncStatus.DataLength = FDCAN_DLC_BYTES_8;
@@ -931,7 +1012,22 @@ void startCanTask(void *argument)
         HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
 
         uint32_t apiClass = (rxHeader.Identifier >> 10) & 0x3F;
-        if (apiClass == 1) { // Control Class
+        uint32_t devId = rxHeader.Identifier & 0x3F;
+
+        if (apiClass == 0 && devId == 0) { // System Broadcast Class
+            uint32_t target_uid = *((uint32_t *)&rxData[0]);
+            if (target_uid == hashed_id) {
+                uint8_t new_id = rxData[4] & 0x3F;
+                save_config(new_id);
+                g_device_id = new_id;
+                // Update TX headers with new ID
+                txGeneralStatus.Identifier = BACK_PORCH_GENERAL_STATUS | g_device_id;
+                txSwVersion.Identifier = BACK_PORCH_SW_VERSION | g_device_id;
+                txEncStatus.Identifier = BACK_PORCH_ENCODER_STATUS | g_device_id;
+            }
+        }
+
+        if (apiClass == 1 && devId == g_device_id) { // Control Class for OUR device
             uint8_t cmd = rxData[0];
             if (cmd == CAN_CMD_START) {
                 // Send ACK 0xAA 0x01 to indicate app-to-bootloader transition

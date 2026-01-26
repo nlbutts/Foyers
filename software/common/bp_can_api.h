@@ -16,9 +16,13 @@
   (42 << 16) // 42 is the answer to life the universe and everything
 
 /* API Classes */
+#define WPILIB_API_CLASS_SYSTEM (0 << 10)
 #define WPILIB_API_CLASS_CONTROL (1 << 10)
 #define WPILIB_API_CLASS_DATA (2 << 10)
 #define WPILIB_API_CLASS_STATUS (5 << 10)
+
+/* API Indices for System Class */
+#define WPILIB_API_INDEX_ASSIGN_ID (0 << 6)
 
 /* API Indices for Status Class */
 #define WPILIB_API_INDEX_SW_VERSION (0 << 6)
@@ -75,5 +79,18 @@
     Byte 4-5: Encoder 2 Absolute position in 0.01 degrees (little endian)
     Byte 6-7: Encoder 2 Incremental position in 0.01 degrees (little endian)
  */
+
+/* --- Bootloader / Application Shared Configuration --- */
+
+#define BOOT_CONFIG_MAGIC 0xCAFEBABE
+#define BOOT_CONFIG_ADDR 0x08007800 // Page 15 (reserved for boot config)
+#define BOOT_CONFIG_PAGE 15
+
+typedef struct {
+  uint32_t magic; // BOOT_CONFIG_MAGIC
+  uint32_t appSize;
+  uint32_t appCrc;
+  uint32_t deviceID;
+} BootConfig_t;
 
 #endif /* BP_CAN_API_H_ */

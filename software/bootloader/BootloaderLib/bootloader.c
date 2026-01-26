@@ -358,6 +358,11 @@ static void VerifyAndFlash(void) {
         uint32_t PageError;
         
         HAL_FLASH_Unlock();
+        /* Clear flash error flags */
+        __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_OPERR | FLASH_FLAG_PROGERR | FLASH_FLAG_WRPERR | 
+                               FLASH_FLAG_PGAERR | FLASH_FLAG_SIZERR | FLASH_FLAG_PGSERR | 
+                               FLASH_FLAG_MISERR | FLASH_FLAG_FASTERR | FLASH_FLAG_RDERR | 
+                               FLASH_FLAG_OPTVERR);
         
         EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
         EraseInitStruct.Banks = FLASH_BANK_1;
@@ -366,8 +371,10 @@ static void VerifyAndFlash(void) {
         
         // Erase is slow, feed IWDG frequently
         HAL_IWDG_Refresh(&hiwdg);
-        if (HAL_FLASHEx_Erase(&EraseInitStruct, &PageError) != HAL_OK) {
-             Log("Erase Error at page %lu", PageError);
+        HAL_StatusTypeDef status;
+        status = HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
+        if (status != HAL_OK) {
+             Log("Erase Error at page %lu status: %d", PageError, status);
              currentState = BOOT_STATE_ERROR;
              HAL_FLASH_Lock();
              return;
@@ -386,6 +393,16 @@ static void VerifyAndFlash(void) {
             }
         }
         
+        /* Preserve Device ID from existing config if valid */
+        uint32_t preservedDeviceID = 0;
+        BootConfig_t* oldConfig = (BootConfig_t*)BOOT_CONFIG_ADDR;
+        if (oldConfig->magic == 0xCAFEBABE) {
+            preservedDeviceID = oldConfig->deviceID;
+        } else {
+            /* Fallback: use ID from the last received CAN frame or default */
+            preservedDeviceID = lastDeviceID;
+        }
+
         Log("Updating Boot Config...");
         EraseInitStruct.Page = 15;
         EraseInitStruct.NbPages = 1;
@@ -397,8 +414,14 @@ static void VerifyAndFlash(void) {
              return;
         }
         
-        uint64_t configData1 = ((uint64_t)expectedCrc << 32) | bytesReceived;
-        uint64_t configData2 = 0xCAFEBABE;
+        /* New Layout:
+           Offset 0: Magic (0xCAFEBABE)
+           Offset 4: AppSize
+           Offset 8: AppCrc
+           Offset 12: DeviceID
+        */
+        uint64_t configData1 = ((uint64_t)bytesReceived << 32) | 0xCAFEBABE;
+        uint64_t configData2 = ((uint64_t)preservedDeviceID << 32) | expectedCrc;
         
         if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, BOOT_CONFIG_ADDR, configData1) != HAL_OK) {
             Log("Config1 Program Error");
