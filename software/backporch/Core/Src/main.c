@@ -28,7 +28,7 @@
 #include <string.h>
 #include "stm32g0xx_ll_adc.h"
 #include <stdio.h>
-#include "bp_can_api.h"
+#include "common.h"
 #include "version.h"
 /* USER CODE END Includes */
 
@@ -38,6 +38,7 @@
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
 
 /* USER CODE END PD */
 
@@ -49,14 +50,13 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 
+CRC_HandleTypeDef hcrc;
+
 FDCAN_HandleTypeDef hfdcan1;
 
 I2C_HandleTypeDef hi2c1;
 
 IWDG_HandleTypeDef hiwdg;
-
-volatile uint32_t can_rx_msg_count = 0;
-volatile uint32_t last_rx_id = 0;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -98,11 +98,16 @@ const osMessageQueueAttr_t canQ_attributes = {
   .name = "canQ"
 };
 /* USER CODE BEGIN PV */
+osMutexId_t uartMutexHandle;
+const osMutexAttr_t uartMutex_attributes = {
+  .name = "uartMutex"
+};
 void uart5_puts(const char * str);
 volatile int32_t pulse_width_1000deg = 0;
 volatile int32_t enc1_count = 0;
 volatile uint8_t enc1_prev_state = 0;
-
+volatile uint32_t can_rx_msg_count = 0;
+volatile uint32_t last_rx_id = 0;
 uint8_t g_device_id = 0;
 
 void load_config() {
@@ -115,70 +120,36 @@ void load_config() {
 }
 
 void save_config(uint8_t new_id) {
-    char msg[64]; // Buffer for debug messages
-    BootConfig_t cfg __attribute__((aligned(8)));
+    //char msg[64];
+    extern CRC_HandleTypeDef hcrc;
     
-    // Read existing config
-    memcpy(&cfg, (void*)BOOT_CONFIG_ADDR, sizeof(BootConfig_t));
+    /* Read existing config from flash */
+    BootConfig_t* flashConfig = (BootConfig_t *)BOOT_CONFIG_ADDR;
     
-    // Update ID and ensure Magic/Structure validity
-    cfg.magic = BOOT_CONFIG_MAGIC;
-    cfg.deviceID = new_id;
-    // Note: appSize and appCrc are preserved from the read
+    /* Prepare new config in RAM at the designated location */
+    BootConfig_t* ramConfig = RAM_CONFIG_ADDR;
     
-    sprintf(msg, "Saving config: ID %u to 0x%08X\r\n", new_id, BOOT_CONFIG_ADDR);
-    uart5_puts(msg);
-    osDelay(200);
-
-    /* Critical Section: Disable Interrupts to prevent fetching from Flash while it's busy */
+    /* Start with current flash config if valid, otherwise zero */
+    if (flashConfig->magic == BOOT_CONFIG_MAGIC) {
+        memcpy(ramConfig, flashConfig, sizeof(BootConfig_t));
+    } else {
+        memset(ramConfig, 0, sizeof(BootConfig_t));
+    }
+    
+    /* Update the deviceID */
+    ramConfig->magic = BOOT_CONFIG_MAGIC;
+    ramConfig->deviceID = new_id;
+    
+    /* Calculate CRC over appSize through reserved[] (exclude magic and crc fields) */
+    /* CRC covers: appSize, appCrc, deviceID, reserved[1004] = 1016 bytes = 254 words */
+    ramConfig->crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)&ramConfig->appSize, 
+                                       (sizeof(BootConfig_t) - 8) / 4); /* 8 = sizeof(magic) + sizeof(crc) */
+    
+    /* Set the magic word to trigger config programming on reboot */
+    *MAGIC_WORD_ADDR = MAGIC_WORD_PROGRAM_CONFIG;
+    
     __disable_irq();
-
-    HAL_FLASH_Unlock();
-    
-    /* Clear flash error flags */
-    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_OPERR | FLASH_FLAG_PROGERR | FLASH_FLAG_WRPERR | 
-                           FLASH_FLAG_PGAERR | FLASH_FLAG_SIZERR | FLASH_FLAG_PGSERR | 
-                           FLASH_FLAG_MISERR | FLASH_FLAG_FASTERR | FLASH_FLAG_RDERR | 
-                           FLASH_FLAG_OPTVERR);
-
-    HAL_IWDG_Refresh(&hiwdg);
-
-    FLASH_EraseInitTypeDef erase;
-    erase.TypeErase = FLASH_TYPEERASE_PAGES;
-    erase.Banks = FLASH_BANK_1; 
-    erase.Page = BOOT_CONFIG_PAGE; 
-    erase.NbPages = 1;
-    uint32_t pageError;
-    
-    HAL_StatusTypeDef status = HAL_FLASHEx_Erase(&erase, &pageError);
-    HAL_IWDG_Refresh(&hiwdg);
-    if (status != HAL_OK) {
-        HAL_FLASH_Lock();
-        __enable_irq(); // Re-enable interrupts before returning
-        sprintf(msg, "Flash Erase Failed: %d (PageError: %u)\r\n", status, (unsigned int)pageError);
-        uart5_puts(msg);
-        return;
-    }
-    
-    
-    uint64_t *ptr = (uint64_t *)&cfg;
-    for (int i = 0; i < sizeof(BootConfig_t) / 8; i++) {
-        HAL_IWDG_Refresh(&hiwdg);
-        status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, BOOT_CONFIG_ADDR + (i * 8), ptr[i]);
-        if (status != HAL_OK) {
-            HAL_FLASH_Lock();
-            __enable_irq();
-            sprintf(msg, "Flash Program Failed at %d: %d\r\n", i, status);
-            uart5_puts(msg);
-            return;
-        }
-    }
-    
-    HAL_FLASH_Lock();
-    __enable_irq(); // End Critical Section
-
-    uart5_puts("Flash Save Complete\r\n");
-    osDelay(200);
+    HAL_NVIC_SystemReset();
 }
 /* USER CODE END PV */
 
@@ -193,6 +164,7 @@ static void MX_TIM1_Init(void);
 static void MX_USART5_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_IWDG_Init(void);
+static void MX_CRC_Init(void);
 void StartDefaultTask(void *argument);
 void startCanTask(void *argument);
 void StartMonTask(void *argument);
@@ -212,7 +184,13 @@ void txstring(const char * str)
 
 void uart5_puts(const char * str)
 {
+    if (uartMutexHandle != NULL) {
+        osMutexAcquire(uartMutexHandle, osWaitForever);
+    }
     HAL_UART_Transmit(&huart5, (uint8_t*)str, strlen(str), 100);
+    if (uartMutexHandle != NULL) {
+        osMutexRelease(uartMutexHandle);
+    }
 }
 
 void configureTimerForRunTimeStats(void)
@@ -302,6 +280,7 @@ int main(void)
   MX_USART5_UART_Init();
   MX_TIM2_Init();
   MX_IWDG_Init();
+  MX_CRC_Init();
   /* USER CODE BEGIN 2 */
   HAL_ADCEx_Calibration_Start(&hadc1);
   HAL_IWDG_Refresh(&hiwdg); // Early refresh
@@ -318,6 +297,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
+  uartMutexHandle = osMutexNew(&uartMutex_attributes);
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
@@ -482,6 +462,37 @@ static void MX_ADC1_Init(void)
 }
 
 /**
+  * @brief CRC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CRC_Init(void)
+{
+
+  /* USER CODE BEGIN CRC_Init 0 */
+
+  /* USER CODE END CRC_Init 0 */
+
+  /* USER CODE BEGIN CRC_Init 1 */
+
+  /* USER CODE END CRC_Init 1 */
+  hcrc.Instance = CRC;
+  hcrc.Init.DefaultPolynomialUse = DEFAULT_POLYNOMIAL_ENABLE;
+  hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_ENABLE;
+  hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_NONE;
+  hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_DISABLE;
+  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_WORDS;
+  if (HAL_CRC_Init(&hcrc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CRC_Init 2 */
+
+  /* USER CODE END CRC_Init 2 */
+
+}
+
+/**
   * @brief FDCAN1 Initialization Function
   * @param None
   * @retval None
@@ -512,7 +523,7 @@ static void MX_FDCAN1_Init(void)
   hfdcan1.Init.DataTimeSeg1 = 1;
   hfdcan1.Init.DataTimeSeg2 = 1;
   hfdcan1.Init.StdFiltersNbr = 0;
-  hfdcan1.Init.ExtFiltersNbr = 1;
+  hfdcan1.Init.ExtFiltersNbr = 0;
   hfdcan1.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
   if (HAL_FDCAN_Init(&hfdcan1) != HAL_OK)
   {
@@ -847,6 +858,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM2 && htim->Channel == HAL_TIM_ACTIVE_CHANNEL_4)
@@ -1018,12 +1030,7 @@ void startCanTask(void *argument)
             uint32_t target_uid = *((uint32_t *)&rxData[0]);
             if (target_uid == hashed_id) {
                 uint8_t new_id = rxData[4] & 0x3F;
-                save_config(new_id);
-                g_device_id = new_id;
-                // Update TX headers with new ID
-                txGeneralStatus.Identifier = BACK_PORCH_GENERAL_STATUS | g_device_id;
-                txSwVersion.Identifier = BACK_PORCH_SW_VERSION | g_device_id;
-                txEncStatus.Identifier = BACK_PORCH_ENCODER_STATUS | g_device_id;
+                save_config(new_id); // Does not return - reboots to program config via bootloader
             }
         }
 
@@ -1046,10 +1053,10 @@ void startCanTask(void *argument)
                 HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txHeader, ackData);
                 
                 // Set Magic Word and Reboot (survives bootloader startup at this address)
-                *((uint32_t *)0x2000C000) = 0xDEADBEEF;
-                osDelay(100);
+                *MAGIC_WORD_ADDR = MAGIC_WORD_PROGRAM_FW;
+                __disable_irq();
                 HAL_NVIC_SystemReset();    
-            }
+            } 
         }
     }
 

@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include "version.h"
 
 /* Version Defines */
@@ -393,18 +394,33 @@ static void VerifyAndFlash(void) {
             }
         }
         
-        /* Preserve Device ID from existing config if valid */
-        uint32_t preservedDeviceID = 0;
+        /* Preserve existing BootConfig_t and update app-related fields */
+        BootConfig_t newConfig __attribute__((aligned(8)));
         BootConfig_t* oldConfig = (BootConfig_t*)BOOT_CONFIG_ADDR;
-        if (oldConfig->magic == 0xCAFEBABE) {
-            preservedDeviceID = oldConfig->deviceID;
+        
+        /* Start with zeroed config */
+        memset(&newConfig, 0, sizeof(BootConfig_t));
+        
+        /* Preserve deviceID and reserved data if old config was valid */
+        if (oldConfig->magic == BOOT_CONFIG_MAGIC) {
+            newConfig.deviceID = oldConfig->deviceID;
+            memcpy(newConfig.reserved, oldConfig->reserved, sizeof(newConfig.reserved));
         } else {
             /* Fallback: use ID from the last received CAN frame or default */
-            preservedDeviceID = lastDeviceID;
+            newConfig.deviceID = lastDeviceID;
         }
+        
+        /* Set application info */
+        newConfig.magic = BOOT_CONFIG_MAGIC;
+        newConfig.appSize = bytesReceived;
+        newConfig.appCrc = expectedCrc;
+        
+        /* Calculate CRC over appSize through reserved[] (exclude magic and crc fields) */
+        newConfig.crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)&newConfig.appSize, 
+                                          (sizeof(BootConfig_t) - offsetof(BootConfig_t, appSize)) / 4);
 
-        Log("Updating Boot Config...");
-        EraseInitStruct.Page = 15;
+        Log("Updating Boot Config (CRC=0x%08X)...", newConfig.crc);
+        EraseInitStruct.Page = BOOT_CONFIG_PAGE;
         EraseInitStruct.NbPages = 1;
         
         if (HAL_FLASHEx_Erase(&EraseInitStruct, &PageError) != HAL_OK) {
@@ -414,22 +430,16 @@ static void VerifyAndFlash(void) {
              return;
         }
         
-        /* New Layout:
-           Offset 0: Magic (0xCAFEBABE)
-           Offset 4: AppSize
-           Offset 8: AppCrc
-           Offset 12: DeviceID
-        */
-        uint64_t configData1 = ((uint64_t)bytesReceived << 32) | 0xCAFEBABE;
-        uint64_t configData2 = ((uint64_t)preservedDeviceID << 32) | expectedCrc;
-        
-        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, BOOT_CONFIG_ADDR, configData1) != HAL_OK) {
-            Log("Config1 Program Error");
-            currentState = BOOT_STATE_ERROR;
-        }
-        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, BOOT_CONFIG_ADDR + 8, configData2) != HAL_OK) {
-            Log("Config2 Program Error");
-            currentState = BOOT_STATE_ERROR;
+        /* Program entire BootConfig_t structure (1024 bytes) */
+        uint64_t *ptr = (uint64_t *)&newConfig;
+        for (uint32_t i = 0; i < sizeof(BootConfig_t); i += 8) {
+            HAL_IWDG_Refresh(&hiwdg);
+            if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, BOOT_CONFIG_ADDR + i, ptr[i/8]) != HAL_OK) {
+                Log("Config Program Error at offset %lu", i);
+                currentState = BOOT_STATE_ERROR;
+                HAL_FLASH_Lock();
+                return;
+            }
         }
         
         HAL_FLASH_Lock();
@@ -463,6 +473,73 @@ static void SendStatus(uint8_t status, uint32_t data) {
     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeader, TxData);
 }
 
+/* Program BootConfig_t structure from RAM to flash */
+static void ProgramConfigFromRAM(void) {
+    Log("Programming BootConfig_t from RAM...");
+    
+    BootConfig_t* ramConfig = RAM_CONFIG_ADDR;
+    BootConfig_t newConfig __attribute__((aligned(8)));
+    
+    /* Copy from RAM */
+    memcpy(&newConfig, ramConfig, sizeof(BootConfig_t));
+
+    Log("Config: Magic=0x%08X, DevID=%lu, AppSize=%lu, AppCRC=0x%08X, CRC=0x%08X",
+        newConfig.magic, newConfig.deviceID, newConfig.appSize, newConfig.appCrc, newConfig.crc);
+    
+    /* Verify the magic word in the RAM config */
+    if (newConfig.magic != BOOT_CONFIG_MAGIC) {
+        Log("Invalid config magic in RAM: 0x%08X", newConfig.magic);
+        return;
+    }
+    
+    /* Recalculate CRC to ensure integrity */
+    uint32_t calculatedCrc = HAL_CRC_Calculate(&hcrc, (uint32_t*)&newConfig.appSize,
+                                                (sizeof(BootConfig_t) - offsetof(BootConfig_t, appSize)) / 4);
+    
+    if (calculatedCrc != newConfig.crc) {
+        Log("Config CRC mismatch: calc=0x%08X, stored=0x%08X", calculatedCrc, newConfig.crc);
+        return;
+    }
+    
+    /* Erase config page */
+    FLASH_EraseInitTypeDef EraseInitStruct;
+    uint32_t PageError;
+    
+    HAL_FLASH_Unlock();
+    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_OPERR | FLASH_FLAG_PROGERR | FLASH_FLAG_WRPERR | 
+                           FLASH_FLAG_PGAERR | FLASH_FLAG_SIZERR | FLASH_FLAG_PGSERR | 
+                           FLASH_FLAG_MISERR | FLASH_FLAG_FASTERR | FLASH_FLAG_RDERR | 
+                           FLASH_FLAG_OPTVERR);
+    
+    EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
+    EraseInitStruct.Banks = FLASH_BANK_1;
+    EraseInitStruct.Page = BOOT_CONFIG_PAGE;
+    EraseInitStruct.NbPages = 1;
+    
+    HAL_IWDG_Refresh(&hiwdg);
+    if (HAL_FLASHEx_Erase(&EraseInitStruct, &PageError) != HAL_OK) {
+        Log("Config Erase Error at page %lu", PageError);
+        HAL_FLASH_Lock();
+        return;
+    }
+    
+    /* Program entire BootConfig_t structure */
+    uint64_t *ptr = (uint64_t *)&newConfig;
+    for (uint32_t i = 0; i < sizeof(BootConfig_t); i += 8) {
+        HAL_IWDG_Refresh(&hiwdg);
+        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, BOOT_CONFIG_ADDR + i, ptr[i/8]) != HAL_OK) {
+            Log("Config Program Error at offset %lu", i);
+            HAL_FLASH_Lock();
+            return;
+        }
+    }
+    
+    HAL_FLASH_Lock();
+    Log("BootConfig_t programmed successfully. Resetting...");
+    HAL_Delay(100);
+    HAL_NVIC_SystemReset();
+}
+
 void Bootloader_CheckAndJump(void) {
     /* Check if Watchdog triggered the reset */
     if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
@@ -476,15 +553,31 @@ void Bootloader_CheckAndJump(void) {
 
     uint32_t magic = *MAGIC_WORD_ADDR;
     
-    if (magic == HEAD_MAGIC_WORD) {
-        Log("Magic Word detected. Staying in bootloader.");
+    if (magic == MAGIC_WORD_PROGRAM_FW) {
+        Log("Firmware Program Magic detected. Staying in bootloader.");
         *MAGIC_WORD_ADDR = 0; // Clear magic word so next boot is normal
         return; 
     }
     
+    if (magic == MAGIC_WORD_PROGRAM_CONFIG) {
+        Log("Config Program Magic detected. Programming config from RAM.");
+        *MAGIC_WORD_ADDR = 0; // Clear magic word
+        ProgramConfigFromRAM();
+        return; // ProgramConfigFromRAM will reset on success
+    }
+    
     BootConfig_t* pConfig = (BootConfig_t*)BOOT_CONFIG_ADDR;
     
-    if (pConfig->magic == 0xCAFEBABE) {
+    if (pConfig->magic == BOOT_CONFIG_MAGIC) {
+        /* First verify BootConfig_t CRC */
+        uint32_t configCrc = HAL_CRC_Calculate(&hcrc, (uint32_t*)&pConfig->appSize,
+                                               (sizeof(BootConfig_t) - offsetof(BootConfig_t, appSize)) / 4);
+        
+        if (configCrc != pConfig->crc) {
+            Log("BootConfig CRC fail: 0x%08X vs 0x%08X", configCrc, pConfig->crc);
+            return;
+        }
+        
         Log("Valid config found. Verifying App...");
         uint32_t flashCrc = HAL_CRC_Calculate(&hcrc, (uint32_t*)APP_START_ADDR, pConfig->appSize / 4);
         

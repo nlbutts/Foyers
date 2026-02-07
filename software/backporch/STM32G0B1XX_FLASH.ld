@@ -55,7 +55,7 @@ ENTRY(Reset_Handler)
 /* Specify the memory areas */
 MEMORY
 {
-RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 144K
+RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 143K
 FLASH (rx)      : ORIGIN = 0x08008000, LENGTH = 96K
 }
 

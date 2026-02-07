@@ -4,14 +4,10 @@
 #include "main.h"
 #include <stdint.h>
 
-#include "bp_can_api.h"
+#include "common.h"
 
 /* WPILib CAN Addressing Constants */
 #define WPILIB_DEVICE_ID (0) // Default Device ID
-
-/* Magic Word for Bootloader Entry */
-#define MAGIC_WORD_ADDR ((uint32_t *)0x2000C000)
-#define HEAD_MAGIC_WORD 0xDEADBEEF
 
 /* Memory Map Constants */
 #define APP_START_ADDR 0x08008000

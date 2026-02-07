@@ -23,7 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "bootloader.h"
 #include "stm32g0xx_hal_gpio.h"
-#include "bp_can_api.h"
+#include "common.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -192,7 +192,7 @@ void SystemClock_Config(void)
   * @param None
   * @retval None
   */
-static void MX_CRC_Init(void)
+static void MX_CRC_Init(void) 
 {
 
   /* USER CODE BEGIN CRC_Init 0 */
