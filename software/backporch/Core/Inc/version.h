@@ -3,6 +3,6 @@
 
 #define MAJOR_VERSION 1
 #define MINOR_VERSION 0
-#define BUILD_NUMBER 74
+#define BUILD_NUMBER 92
 
 #endif // VERSION_H

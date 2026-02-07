@@ -26,7 +26,7 @@ static uint32_t lastDeviceID = 0;
 static uint8_t* pRamBuffer = (uint8_t*)RAM_BUFFER_ADDR;
 
 /* Private Prototypes */
-static void ProcessControlPacket(uint8_t* data);
+static void ProcessControlPacket(uint8_t* data, uint32_t devId);
 static void ProcessDataPacket(uint8_t* data, uint32_t len);
 static void VerifyAndFlash(void);
 static void SendStatus(uint8_t status, uint32_t data);
@@ -272,21 +272,21 @@ void Bootloader_RxCallback(void) {
         }
     }
 
-    // Save Device ID for response (lower 6 bits)
-    lastDeviceID = RxHeader.Identifier & 0x3F;
+    // Extract Device ID from message (lower 6 bits) - stored only in CMD_START
+    uint32_t rxDeviceID = RxHeader.Identifier & 0x3F;
 
     // Extract API Class from ID (Bits 15-10)
     uint32_t apiClass = (RxHeader.Identifier >> 10) & 0x3F;
 
     if (apiClass == 1) {
         Log("Processed Control Packet CMD=0x%02X", RxData[0]);
-        ProcessControlPacket(RxData);
+        ProcessControlPacket(RxData, rxDeviceID);
     } else if (apiClass == 2) {
         ProcessDataPacket(RxData, len);
     }
 }
 
-static void ProcessControlPacket(uint8_t* data) {
+static void ProcessControlPacket(uint8_t* data, uint32_t devId) {
     uint8_t cmd = data[0];
     Log("Control Packet: CMD=0x%02X", cmd);
     
@@ -295,6 +295,7 @@ static void ProcessControlPacket(uint8_t* data) {
             Log("CMD_START received. Resetting buffer.");
             currentState = BOOT_STATE_RECEIVING;
             bytesReceived = 0;
+            lastDeviceID = devId; // Capture device ID only on CMD_START
             memset(pRamBuffer, 0, APP_SIZE_MAX); // Clear buffer for clean programming
             SendStatus(0x00, 0); // OK
             break;

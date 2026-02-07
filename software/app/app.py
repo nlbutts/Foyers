@@ -35,6 +35,10 @@ class CanMonitorApp:
         self.device_id = tk.IntVar(value=0)
         self.updating = False
         self.print_traffic = tk.BooleanVar(value=False)
+        self.last_msg_time = time.time()
+        self.total_bits = 0
+        self.last_util_time = time.time()
+        self.bus_util_str = tk.StringVar(value="Bus Util: 0.0%")
 
         self.setup_ui()
         
@@ -83,6 +87,7 @@ class CanMonitorApp:
         frame_debug = ttk.LabelFrame(self.root, text=" Debug Tools ", padding=10)
         frame_debug.pack(fill="x", padx=10, pady=5)
         ttk.Checkbutton(frame_debug, text="Log CAN Traffic to Console", variable=self.print_traffic).pack(side="left")
+        ttk.Label(frame_debug, textvariable=self.bus_util_str, font=("Consolas", 10, "bold")).pack(side="right", padx=10)
 
         # Device Status Container
         self.devices_frame = ttk.Frame(self.root)
@@ -144,7 +149,7 @@ class CanMonitorApp:
             ack_received = False
             for attempt in range(5):
                 logger.info(f"Sending CMD_START to ID 0x{CTRL_ID:08X} (Attempt {attempt+1})")
-                self.bus.send(can.Message(arbitration_id=CTRL_ID, data=[0x01], is_extended_id=True))
+                self.safe_send(can.Message(arbitration_id=CTRL_ID, data=[0x01], is_extended_id=True))
                 
                 # Wait for ACK (0xAA 0x00 or 0xAA 0x01)
                 start_time = time.time()
@@ -180,7 +185,7 @@ class CanMonitorApp:
             
             for i in range(0, total_size, 8):
                 chunk = content[i:i+8]
-                self.bus.send(can.Message(arbitration_id=DATA_ID, data=list(chunk), is_extended_id=True))
+                self.safe_send(can.Message(arbitration_id=DATA_ID, data=list(chunk), is_extended_id=True))
                 sent += len(chunk)
                 self.progress["value"] = (sent / total_size) * 100
                 if i % 512 == 0:
@@ -193,7 +198,7 @@ class CanMonitorApp:
             crc = self.calculate_stm32_crc(content)
             logger.debug(f"Calculated CRC32: 0x{crc:08X}")
             commit_data = [0x02] + list(struct.pack("<I", crc))
-            self.bus.send(can.Message(arbitration_id=CTRL_ID, data=commit_data, is_extended_id=True))
+            self.safe_send(can.Message(arbitration_id=CTRL_ID, data=commit_data, is_extended_id=True))
 
             success = False
             start_time = time.time()
@@ -234,8 +239,16 @@ class CanMonitorApp:
             try:
                 msg = self.bus.recv(0.1)
                 if msg:
+                    # Count bits for utilization (approx 160 bits for 8-byte extended frame)
+                    # Extended classic CAN: ~80 bits base + ~10 bits per data byte including stuffing
+                    msg_bits = 80 + (len(msg.data) * 10)
+                    self.total_bits += msg_bits
+
                     if self.print_traffic.get():
-                        logger.info(self.format_can_msg(msg))
+                        now = time.time()
+                        delta = (now - self.last_msg_time) * 1000
+                        logger.info(f"[+{delta:6.1f}ms] {self.format_can_msg(msg)}")
+                        self.last_msg_time = now
                     # Pump to all interested handlers
                     for handler in list(self.can_handlers): # list() to prevent mutation issues
                         try:
@@ -303,7 +316,6 @@ class CanMonitorApp:
     def create_device(self, dev_id):
         # UI Frame for this device
         frame = ttk.LabelFrame(self.devices_frame, text=f" Device ID: {dev_id} ", padding=5)
-        frame.pack(fill="x", pady=2)
         
         # Create labels and store them
         labels = {}
@@ -343,6 +355,14 @@ class CanMonitorApp:
                 "Encoder": {"Enc1_Abs": 0, "Enc1_Inc": 0, "Enc2_Abs": 0, "Enc2_Inc": 0}
             }
         }
+        self.reorder_devices()
+
+    def reorder_devices(self):
+        """Re-sorts the device frames in the UI by their device ID."""
+        sorted_ids = sorted(self.devices.keys())
+        for i, dev_id in enumerate(sorted_ids):
+            self.devices[dev_id]["frame"].grid(row=i, column=0, sticky="ew", pady=2)
+            self.devices_frame.columnconfigure(0, weight=1)
 
     def update_device_id_display(self, device, dev_id, uid_hash):
         device["labels"]["uid"].config(text=f"UID: {uid_hash:08X}")
@@ -361,7 +381,17 @@ class CanMonitorApp:
         while len(payload) < 8: payload.append(0)
         
         logger.info(f"Assigning Device ID {new_id} to Unique ID {uid:08X}")
-        self.bus.send(can.Message(arbitration_id=ASSIGN_ID, data=payload, is_extended_id=True))
+        self.safe_send(can.Message(arbitration_id=ASSIGN_ID, data=payload, is_extended_id=True))
+
+    def safe_send(self, msg):
+        """Sends a message and counts bits for utilization."""
+        try:
+            self.bus.send(msg)
+            # Count bits for utilization (approx 160 bits for 8-byte extended frame)
+            msg_bits = 80 + (len(msg.data) * 10)
+            self.total_bits += msg_bits
+        except Exception as e:
+            logger.error(f"Send error: {e}")
 
     def calculate_stm32_crc(self, content):
         """
@@ -429,10 +459,23 @@ class CanMonitorApp:
             e = d["Encoder"]
             l["enc"].config(text=f"E1: {e['Enc1_Abs']:.2f}°/{e['Enc1_Inc']}c | E2: {e['Enc2_Abs']:.2f}°/{e['Enc2_Inc']}c")
 
+        # Update Bus Utilization
+        now_util = time.time()
+        dt = now_util - self.last_util_time
+        if dt >= 0.1: # Update every 100ms
+            # Capacity in bits = bitrate * dt
+            # Using 1,000,000 as bitrate
+            capacity = 1000000 * dt
+            util = (self.total_bits / capacity) * 100
+            self.bus_util_str.set(f"Bus Util: {util:4.1f}%")
+            self.total_bits = 0
+            self.last_util_time = now_util
+
         for dev_id in to_delete:
             logger.info(f"Removing timed out device: {dev_id}")
             self.devices[dev_id]["frame"].destroy()
             del self.devices[dev_id]
+            self.reorder_devices()
 
         self.root.after(100, self.update_ui)
 

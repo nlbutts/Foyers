@@ -30,11 +30,12 @@
 #include <stdio.h>
 #include "common.h"
 #include "version.h"
+#include "FreeRTOS.h"
+#include "task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -71,10 +72,10 @@ const osThreadAttr_t defaultTask_attributes = {
   .priority = (osPriority_t) osPriorityNormal,
   .stack_size = 4096 * 4
 };
-/* Definitions for canTask */
-osThreadId_t canTaskHandle;
-const osThreadAttr_t canTask_attributes = {
-  .name = "canTask",
+/* Definitions for canRxTask */
+osThreadId_t canRxTaskHandle;
+const osThreadAttr_t canRxTask_attributes = {
+  .name = "canRxTask",
   .priority = (osPriority_t) osPriorityLow,
   .stack_size = 128 * 4
 };
@@ -85,17 +86,12 @@ const osThreadAttr_t monTask_attributes = {
   .priority = (osPriority_t) osPriorityLow,
   .stack_size = 1024 * 4
 };
-/* Definitions for encTask */
-osThreadId_t encTaskHandle;
-const osThreadAttr_t encTask_attributes = {
-  .name = "encTask",
+/* Definitions for canTxTask */
+osThreadId_t canTxTaskHandle;
+const osThreadAttr_t canTxTask_attributes = {
+  .name = "canTxTask",
   .priority = (osPriority_t) osPriorityBelowNormal,
   .stack_size = 128 * 4
-};
-/* Definitions for canQ */
-osMessageQueueId_t canQHandle;
-const osMessageQueueAttr_t canQ_attributes = {
-  .name = "canQ"
 };
 /* USER CODE BEGIN PV */
 osMutexId_t uartMutexHandle;
@@ -109,6 +105,7 @@ volatile uint8_t enc1_prev_state = 0;
 volatile uint32_t can_rx_msg_count = 0;
 volatile uint32_t last_rx_id = 0;
 uint8_t g_device_id = 0;
+uint32_t hashed_id_ = 0;
 
 void load_config() {
     BootConfig_t *cfg = (BootConfig_t *)BOOT_CONFIG_ADDR;
@@ -166,9 +163,9 @@ static void MX_TIM2_Init(void);
 static void MX_IWDG_Init(void);
 static void MX_CRC_Init(void);
 void StartDefaultTask(void *argument);
-void startCanTask(void *argument);
+void canRxTask(void *argument);
 void StartMonTask(void *argument);
-void StartEncTask(void *argument);
+void canTxTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -308,10 +305,6 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
-  /* Create the queue(s) */
-  /* creation of canQ */
-  canQHandle = osMessageQueueNew (16, sizeof(uint32_t), &canQ_attributes);
-
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -320,21 +313,25 @@ int main(void)
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  /* creation of canTask */
-  canTaskHandle = osThreadNew(startCanTask, NULL, &canTask_attributes);
+  /* creation of canRxTask */
+  canRxTaskHandle = osThreadNew(canRxTask, NULL, &canRxTask_attributes);
 
   /* creation of monTask */
   monTaskHandle = osThreadNew(StartMonTask, NULL, &monTask_attributes);
 
-  /* creation of encTask */
-  encTaskHandle = osThreadNew(StartEncTask, NULL, &encTask_attributes);
+  /* creation of canTxTask */
+  canTxTaskHandle = osThreadNew(canTxTask, NULL, &canTxTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
-  /* add events, ... */
+  uint32_t uid[3];
+  uid[0] = HAL_GetUIDw0();
+  uid[1] = HAL_GetUIDw1();
+  uid[2] = HAL_GetUIDw2();
+  hashed_id_ = murmur3_32((uint8_t*)uid, 12, 0);
   /* USER CODE END RTOS_EVENTS */
 
   /* Start scheduler */
@@ -509,7 +506,7 @@ static void MX_FDCAN1_Init(void)
   /* USER CODE END FDCAN1_Init 1 */
   hfdcan1.Instance = FDCAN1;
   hfdcan1.Init.ClockDivider = FDCAN_CLOCK_DIV1;
-  hfdcan1.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
+  hfdcan1.Init.FrameFormat = FDCAN_FRAME_FD_BRS;
   hfdcan1.Init.Mode = FDCAN_MODE_NORMAL;
   hfdcan1.Init.AutoRetransmission = ENABLE;
   hfdcan1.Init.TransmitPause = DISABLE;
@@ -933,16 +930,16 @@ void StartDefaultTask(void *argument)
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_startCanTask */
+/* USER CODE BEGIN Header_canRxTask */
 /**
 * @brief Function implementing the canTask thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_startCanTask */
-void startCanTask(void *argument)
+/* USER CODE END Header_canRxTask */
+void canRxTask(void *argument)
 {
-  /* USER CODE BEGIN startCanTask */
+  /* USER CODE BEGIN canRxTask */
   HAL_GPIO_WritePin(CAN_STB_GPIO_Port, CAN_STB_Pin, GPIO_PIN_RESET);
 
   HAL_FDCAN_Stop(&hfdcan1); // Ensure it's stopped before configuring filter
@@ -958,6 +955,162 @@ void startCanTask(void *argument)
   HAL_FDCAN_ConfigFilter(&hfdcan1, &sFilterConfig);
 
   HAL_FDCAN_Start(&hfdcan1);
+
+
+  /* Infinite loop */
+  for(;;)
+  {
+    // Handle Incoming CAN messages
+    FDCAN_RxHeaderTypeDef rxHeader;
+    uint8_t rxData[8];
+    while (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &rxHeader, rxData) == HAL_OK)
+    {
+        can_rx_msg_count++;
+        last_rx_id = rxHeader.Identifier;
+        if (rxHeader.Identifier == WPILIB_HEARTBEAT_ID)
+        {
+            HAL_GPIO_TogglePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin);
+        }
+
+        uint32_t apiClass = (rxHeader.Identifier >> 10) & 0x3F;
+        uint32_t devId = rxHeader.Identifier & 0x3F;
+
+        if (apiClass == 0 && devId == 0) { // System Broadcast Class
+            uint32_t target_uid = *((uint32_t *)&rxData[0]);
+            if (target_uid == hashed_id_) {
+                uint8_t new_id = rxData[4] & 0x3F;
+                save_config(new_id); // Does not return - reboots to program config via bootloader
+            }
+        }
+
+        if (apiClass == 1 && devId == g_device_id) { // Control Class for OUR device
+            uint8_t cmd = rxData[0];
+            if (cmd == CAN_CMD_START) {
+                // Send ACK 0xAA 0x01 to indicate app-to-bootloader transition
+                FDCAN_TxHeaderTypeDef txHeader;
+                txHeader.Identifier = rxHeader.Identifier;
+                txHeader.IdType = FDCAN_EXTENDED_ID;
+                txHeader.TxFrameType = FDCAN_DATA_FRAME;
+                txHeader.DataLength = FDCAN_DLC_BYTES_8;
+                txHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+                txHeader.BitRateSwitch = FDCAN_BRS_OFF;
+                txHeader.FDFormat = FDCAN_CLASSIC_CAN;
+                txHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+                txHeader.MessageMarker = 0; 
+                
+                uint8_t ackData[8] = {0xAA, 0x01, 0, 0, 0, 0, 0, 0};
+                HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txHeader, ackData);
+                
+                // Set Magic Word and Reboot (survives bootloader startup at this address)
+                *MAGIC_WORD_ADDR = MAGIC_WORD_PROGRAM_FW;
+                __disable_irq();
+                HAL_NVIC_SystemReset();    
+            } 
+        }
+    }
+  }
+  /* USER CODE END canRxTask */
+}
+
+/* USER CODE BEGIN Header_StartMonTask */
+/**
+* @brief Function implementing the monTask thread.
+* @param argument: Not used
+* @retval None
+*/
+static int compareTaskStatus(const void *a, const void *b)
+{
+    const TaskStatus_t *p1 = (const TaskStatus_t *)a;
+    const TaskStatus_t *p2 = (const TaskStatus_t *)b;
+    if (p1->xTaskNumber < p2->xTaskNumber) return -1;
+    if (p1->xTaskNumber > p2->xTaskNumber) return 1;
+    return 0;
+}
+/* USER CODE END Header_StartMonTask */
+void StartMonTask(void *argument)
+{
+  /* USER CODE BEGIN StartMonTask */
+  char stats_buffer[1024];
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(2000);
+    HAL_IWDG_Refresh(&hiwdg);
+    
+    // Clear screen and home cursor
+    uart5_puts("\r\n\r\n");
+    
+    // Header
+    uart5_puts("================ SYSTEM PERFORMANCE MONITOR ================\r\n");
+    
+    // Stack and Task Info
+    uart5_puts("--- Task Status ---\r\n");
+    uart5_puts("Name             State  Prio  FreeStack(Words)  ID\r\n");
+    uart5_puts("----------------------------------------------------------\r\n");
+    vTaskList(stats_buffer);
+    uart5_puts(stats_buffer);
+
+    // CPU Usage
+    uart5_puts("\r\n--- CPU Usage ---\r\n");
+    uart5_puts("Name             Abs Time       Time %\r\n");
+    uart5_puts("----------------------------------------------------------\r\n");
+    
+    UBaseType_t uxArraySize = uxTaskGetNumberOfTasks();
+    TaskStatus_t *pxTaskStatusArray = pvPortMalloc(uxArraySize * sizeof(TaskStatus_t));
+
+    if (pxTaskStatusArray != NULL) {
+        uint32_t ulTotalRunTime;
+        uxArraySize = uxTaskGetSystemState(pxTaskStatusArray, uxArraySize, &ulTotalRunTime);
+
+        if (ulTotalRunTime > 0) {
+            // Sort by Task ID (xTaskNumber)
+            qsort(pxTaskStatusArray, uxArraySize, sizeof(TaskStatus_t), compareTaskStatus);
+            
+            for (UBaseType_t x = 0; x < uxArraySize; x++) {
+                uint32_t ulStatsAsPercentage = (uint32_t)((uint64_t)pxTaskStatusArray[x].ulRunTimeCounter * 10000 / ulTotalRunTime);
+                uint32_t integral = ulStatsAsPercentage / 100;
+                uint32_t fractional = ulStatsAsPercentage % 100;
+                
+                sprintf(stats_buffer, "%-16s %-14lu %2lu.%02lu%%\r\n",
+                        pxTaskStatusArray[x].pcTaskName,
+                        (unsigned long)pxTaskStatusArray[x].ulRunTimeCounter,
+                        (unsigned long)integral, (unsigned long)fractional);
+                uart5_puts(stats_buffer);
+            }
+        }
+        vPortFree(pxTaskStatusArray);
+    }
+ 
+    // Heap Info
+    // uart5_puts("\r\n--- Memory Info ---\r\n");
+    // char heap_str[64];
+    // sprintf(heap_str, "Free Heap: %u bytes\r\n", (unsigned int)xPortGetFreeHeapSize());
+    // uart5_puts(heap_str);
+    
+    // snprintf(stats_buffer, sizeof(stats_buffer),
+    //          "\r\n--- CAN Debug ---\r\n"
+    //          "CAN Rx Count: %lu\r\n"
+    //          "Last Rx ID: 0x%08lX\r\n",
+    //          (unsigned long)can_rx_msg_count, (unsigned long)last_rx_id);
+    // uart5_puts(stats_buffer);
+
+    uart5_puts("============================================================\r\n");
+    HAL_GPIO_TogglePin(SYS_STATUS_GPIO_Port, SYS_STATUS_Pin);
+
+  }
+  /* USER CODE END StartMonTask */
+}
+
+/* USER CODE BEGIN Header_canTxTask */
+/**
+* @brief Function implementing the canTxTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_canTxTask */
+void canTxTask(void *argument)
+{
+  /* USER CODE BEGIN canTxTask */
 
   HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
   HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
@@ -1014,61 +1167,12 @@ void startCanTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    // Handle Incoming CAN messages
-    FDCAN_RxHeaderTypeDef rxHeader;
-    uint8_t rxData[8];
-    while (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &rxHeader, rxData) == HAL_OK)
-    {
-        can_rx_msg_count++;
-        last_rx_id = rxHeader.Identifier;
-        if (rxHeader.Identifier == WPILIB_HEARTBEAT_ID)
-        {
-            HAL_GPIO_TogglePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin);
-        }
-
-        uint32_t apiClass = (rxHeader.Identifier >> 10) & 0x3F;
-        uint32_t devId = rxHeader.Identifier & 0x3F;
-
-        if (apiClass == 0 && devId == 0) { // System Broadcast Class
-            uint32_t target_uid = *((uint32_t *)&rxData[0]);
-            if (target_uid == hashed_id) {
-                uint8_t new_id = rxData[4] & 0x3F;
-                save_config(new_id); // Does not return - reboots to program config via bootloader
-            }
-        }
-
-        if (apiClass == 1 && devId == g_device_id) { // Control Class for OUR device
-            uint8_t cmd = rxData[0];
-            if (cmd == CAN_CMD_START) {
-                // Send ACK 0xAA 0x01 to indicate app-to-bootloader transition
-                FDCAN_TxHeaderTypeDef txHeader;
-                txHeader.Identifier = rxHeader.Identifier;
-                txHeader.IdType = FDCAN_EXTENDED_ID;
-                txHeader.TxFrameType = FDCAN_DATA_FRAME;
-                txHeader.DataLength = FDCAN_DLC_BYTES_8;
-                txHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-                txHeader.BitRateSwitch = FDCAN_BRS_OFF;
-                txHeader.FDFormat = FDCAN_CLASSIC_CAN;
-                txHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
-                txHeader.MessageMarker = 0; 
-                
-                uint8_t ackData[8] = {0xAA, 0x01, 0, 0, 0, 0, 0, 0};
-                HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txHeader, ackData);
-                
-                // Set Magic Word and Reboot (survives bootloader startup at this address)
-                *MAGIC_WORD_ADDR = MAGIC_WORD_PROGRAM_FW;
-                __disable_irq();
-                HAL_NVIC_SystemReset();    
-            } 
-        }
-    }
+    osDelay(100);
 
     uint32_t vref_mv = 3300;
-    uint32_t current_mA = 0;
-    uint16_t input_voltage_mv = 0;
-    int8_t mcu_temp_c = 0;
-
-    osDelay(100);
+    uint16_t voltage_mv = 0;
+    uint8_t current_mA = 0;
+    int8_t temp_c = -127;
 
     // Read VREFINT to calculate actual VREF+
     sConfig.Channel = ADC_CHANNEL_VREFINT;
@@ -1077,13 +1181,12 @@ void startCanTask(void *argument)
     if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
       uint32_t vref_data = HAL_ADC_GetValue(&hadc1);
       if (vref_data > 0) {
-        // VREF+ = VREF+_Charac * VREFINT_CAL / VREFINT_DATA
         vref_mv = (uint32_t)VREFINT_CAL_VREF * (*VREFINT_CAL_ADDR) / vref_data;
       }
     }
     HAL_ADC_Stop(&hadc1);
 
-    // Sanity check for vref_mv (typically 2.0V to 3.6V)
+    // Sanity check for vref_mv
     if (vref_mv < 2000 || vref_mv > 3600) vref_mv = 3300;
 
     // Read AN0 (VIN_MEASURE)
@@ -1092,7 +1195,7 @@ void startCanTask(void *argument)
     HAL_ADC_Start(&hadc1);
     if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
       uint32_t adc_val = HAL_ADC_GetValue(&hadc1);
-      input_voltage_mv = (uint16_t)((adc_val * vref_mv * 11) / 4095);
+      voltage_mv = (uint16_t)((adc_val * vref_mv * 11) / 4095);
     }
     HAL_ADC_Stop(&hadc1);
 
@@ -1102,8 +1205,8 @@ void startCanTask(void *argument)
     HAL_ADC_Start(&hadc1);
     if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
       uint32_t adc_val = HAL_ADC_GetValue(&hadc1);
-      current_mA = (uint32_t)((adc_val * vref_mv * 40) / 4095);
-      current_mA /= 1000;
+      uint32_t current_val = (uint32_t)((adc_val * (uint64_t)vref_mv * 40) / 4095) / 1000;
+      current_mA = current_val > 255 ? 255 : (uint8_t)current_val;
     }
     HAL_ADC_Stop(&hadc1);
 
@@ -1113,12 +1216,9 @@ void startCanTask(void *argument)
     HAL_ADC_Start(&hadc1);
     if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
       uint32_t ts_data = HAL_ADC_GetValue(&hadc1);
-      // Scale TS_DATA to characterized reference (3.0V)
       int32_t ts_data_scaled = (int32_t)ts_data * vref_mv / 3000;
-      
-      // Calculate temperature using factory calibration data
-      mcu_temp_c = (int8_t)((((int32_t)TEMPSENSOR_CAL2_TEMP - TEMPSENSOR_CAL1_TEMP) * (ts_data_scaled - (int32_t)*TEMPSENSOR_CAL1_ADDR)) 
-                   / ((int32_t)*TEMPSENSOR_CAL2_ADDR - (int32_t)*TEMPSENSOR_CAL1_ADDR) + TEMPSENSOR_CAL1_TEMP);
+      temp_c = (int8_t)((((int32_t)TEMPSENSOR_CAL2_TEMP - TEMPSENSOR_CAL1_TEMP) * (ts_data_scaled - (int32_t)*TEMPSENSOR_CAL1_ADDR)) 
+                       / ((int32_t)*TEMPSENSOR_CAL2_ADDR - (int32_t)*TEMPSENSOR_CAL1_ADDR) + TEMPSENSOR_CAL1_TEMP);
     }
     HAL_ADC_Stop(&hadc1);
 
@@ -1135,12 +1235,10 @@ void startCanTask(void *argument)
     TxData[2] = (uint8_t)((hashed_id >> 16) & 0xFF);
     TxData[3] = (uint8_t)((hashed_id >> 24) & 0xFF);
 
-    uint8_t current_val = current_mA > 255 ? 255 : (uint8_t)(current_mA); // Scale to 0-255mA
-
-    TxData[4] = current_val;
-    TxData[5] = (uint8_t)(input_voltage_mv & 0xFF);
-    TxData[6] = (uint8_t)((input_voltage_mv >> 8) & 0xFF);
-    TxData[7] = (uint8_t)mcu_temp_c;
+    TxData[4] = current_mA;
+    TxData[5] = (uint8_t)(voltage_mv & 0xFF);
+    TxData[6] = (uint8_t)((voltage_mv >> 8) & 0xFF);
+    TxData[7] = (uint8_t)temp_c;
 
     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txGeneralStatus, TxData);
 
@@ -1166,82 +1264,7 @@ void startCanTask(void *argument)
     TxData[7] = 0;
     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txEncStatus, TxData);
   }
-  /* USER CODE END startCanTask */
-}
-
-/* USER CODE BEGIN Header_StartMonTask */
-/**
-* @brief Function implementing the monTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartMonTask */
-void StartMonTask(void *argument)
-{
-  /* USER CODE BEGIN StartMonTask */
-  char stats_buffer[1024];
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(2000);
-    HAL_IWDG_Refresh(&hiwdg);
-    
-    // Clear screen and home cursor
-    uart5_puts("\033[2J\033[H");
-    
-    // Header
-    uart5_puts("\033[1;36m================ SYSTEM PERFORMANCE MONITOR ================\033[0m\r\n");
-    
-    // Stack and Task Info
-    uart5_puts("\033[1;33m--- Task Status ---\033[0m\r\n");
-    uart5_puts("Name             State  Prio  FreeStack(Words)  ID\r\n");
-    uart5_puts("----------------------------------------------------------\r\n");
-    vTaskList(stats_buffer);
-    uart5_puts(stats_buffer);
-
-    // CPU Usage
-    uart5_puts("\r\n\033[1;33m--- CPU Usage ---\033[0m\r\n");
-    uart5_puts("Name             Abs Time       Time %\r\n");
-    uart5_puts("----------------------------------------------------------\r\n");
-    vTaskGetRunTimeStats(stats_buffer);
-    uart5_puts(stats_buffer);
-
-    // Heap Info
-    uart5_puts("\r\n\033[1;33m--- Memory Info ---\033[0m\r\n");
-    char heap_str[64];
-    sprintf(heap_str, "Free Heap: %u bytes\r\n", (unsigned int)xPortGetFreeHeapSize());
-    uart5_puts(heap_str);
-    
-    snprintf(stats_buffer, sizeof(stats_buffer),
-             "\r\n\033[1;33m--- CAN Debug ---\033[0m\r\n"
-             "CAN Rx Count: %lu\r\n"
-             "Last Rx ID: 0x%08lX\r\n",
-             (unsigned long)can_rx_msg_count, (unsigned long)last_rx_id);
-    uart5_puts(stats_buffer);
-
-    uart5_puts("\033[1;36m============================================================\033[0m\r\n");
-    HAL_GPIO_TogglePin(SYS_STATUS_GPIO_Port, SYS_STATUS_Pin);
-
-  }
-  /* USER CODE END StartMonTask */
-}
-
-/* USER CODE BEGIN Header_StartEncTask */
-/**
-* @brief Function implementing the encTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartEncTask */
-void StartEncTask(void *argument)
-{
-  /* USER CODE BEGIN StartEncTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END StartEncTask */
+  /* USER CODE END canTxTask */
 }
 
 /**
