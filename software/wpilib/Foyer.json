@@ -1,0 +1,32 @@
+{
+    "fileName": "Foyer.json",
+    "name": "Foyer",
+    "version": "1.0.0",
+    "uuid": "f04e1b2c-3d4e-5f6a-7b8c-9a0b1c2d3e4f",
+    "mavenUrls": [],
+    "jsonUrl": "local",
+    "cppDependencies": [
+        {
+            "groupId": "com.custom",
+            "artifactId": "foyer-cpp",
+            "version": "1.0.0",
+            "libName": "Foyer",
+            "headerClassifier": "headers",
+            "sharedLibrary": false,
+            "skipPrebuilt": true
+        }
+    ],
+    "javaDependencies": [
+        {
+            "groupId": "com.custom",
+            "artifactId": "foyer-java",
+            "version": "1.0.0"
+        }
+    ],
+    "pythonDependencies": [
+        {
+            "name": "foyer-python",
+            "version": "1.0.0"
+        }
+    ]
+}
