@@ -1021,7 +1021,10 @@ void startCanTask(void *argument)
     {
         can_rx_msg_count++;
         last_rx_id = rxHeader.Identifier;
-        HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+        if (rxHeader.Identifier == WPILIB_HEARTBEAT_ID)
+        {
+            HAL_GPIO_TogglePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin);
+        }
 
         uint32_t apiClass = (rxHeader.Identifier >> 10) & 0x3F;
         uint32_t devId = rxHeader.Identifier & 0x3F;
@@ -1123,7 +1126,7 @@ void startCanTask(void *argument)
     HAL_FDCAN_GetProtocolStatus(&hfdcan1, &ProtocolStatus);
     if (ProtocolStatus.BusOff) {
       HAL_FDCAN_Start(&hfdcan1);
-      HAL_GPIO_TogglePin(CAN_STATUS_GPIO_Port, CAN_STATUS_Pin);
+      HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
     }
 
     // Populate TxData based on General Status message format
@@ -1162,8 +1165,6 @@ void startCanTask(void *argument)
     TxData[6] = 0;
     TxData[7] = 0;
     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txEncStatus, TxData);
-
-    HAL_GPIO_TogglePin(SYS_STATUS_GPIO_Port, SYS_STATUS_Pin);
   }
   /* USER CODE END startCanTask */
 }
@@ -1219,6 +1220,8 @@ void StartMonTask(void *argument)
     uart5_puts(stats_buffer);
 
     uart5_puts("\033[1;36m============================================================\033[0m\r\n");
+    HAL_GPIO_TogglePin(SYS_STATUS_GPIO_Port, SYS_STATUS_Pin);
+
   }
   /* USER CODE END StartMonTask */
 }

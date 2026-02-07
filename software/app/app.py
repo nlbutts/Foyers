@@ -34,6 +34,7 @@ class CanMonitorApp:
         self.update_status = tk.StringVar(value="Idle")
         self.device_id = tk.IntVar(value=0)
         self.updating = False
+        self.print_traffic = tk.BooleanVar(value=False)
 
         self.setup_ui()
         
@@ -45,9 +46,6 @@ class CanMonitorApp:
             
             self.receive_thread = threading.Thread(target=self.receive_can, name="ReceiveThread", daemon=True)
             self.receive_thread.start()
-            
-            self.heartbeat_thread = threading.Thread(target=self.send_heartbeat, name="HeartbeatThread", daemon=True)
-            self.heartbeat_thread.start()
         except Exception as e:
             logger.error(f"Error opening CAN bus: {e}")
             self.running = False
@@ -80,6 +78,11 @@ class CanMonitorApp:
         self.progress.pack(fill="x", pady=5)
         
         ttk.Label(frame_boot, textvariable=self.update_status, foreground="blue").pack()
+
+        # Debug Tools Section
+        frame_debug = ttk.LabelFrame(self.root, text=" Debug Tools ", padding=10)
+        frame_debug.pack(fill="x", padx=10, pady=5)
+        ttk.Checkbutton(frame_debug, text="Log CAN Traffic to Console", variable=self.print_traffic).pack(side="left")
 
         # Device Status Container
         self.devices_frame = ttk.Frame(self.root)
@@ -231,6 +234,8 @@ class CanMonitorApp:
             try:
                 msg = self.bus.recv(0.1)
                 if msg:
+                    if self.print_traffic.get():
+                        logger.info(self.format_can_msg(msg))
                     # Pump to all interested handlers
                     for handler in list(self.can_handlers): # list() to prevent mutation issues
                         try:
@@ -293,7 +298,7 @@ class CanMonitorApp:
 
         elif api_id == 0x53: # Class 5, Index 3 (Encoder)
             e1a, e1i, e2a, e2i = struct.unpack("<HhHh", msg.data)
-            device["data"]["Encoder"] = {"Enc1_Abs": e1a/100, "Enc1_Inc": e1i/100, "Enc2_Abs": e2a/100, "Enc2_Inc": e2i/100}
+            device["data"]["Encoder"] = {"Enc1_Abs": e1a/100, "Enc1_Inc": e1i, "Enc2_Abs": e2a/100, "Enc2_Inc": e2i}
 
     def create_device(self, dev_id):
         # UI Frame for this device
@@ -385,23 +390,18 @@ class CanMonitorApp:
                     crc = (crc << 1) & 0xFFFFFFFF
         return crc
 
-    def send_heartbeat(self):
-        """Sends the WPILib Heartbeat message every 20ms in a dedicated thread."""
-        # Arb ID 0x01011840: Robot Controller Heartbeat
-        # Data [1, 0, 0, 0, 0, 0, 0, 0]: Enabled, Red 1, Teleop
-        msg = can.Message(
-            arbitration_id=0x01011840,
-            data=[1, 0, 0, 0, 0, 0, 0, 0],
-            is_extended_id=True
-        )
+    def format_can_msg(self, msg):
+        """Formats a WPILib CAN message for display."""
+        arb_id = msg.arbitration_id
+        # Range: | Type (5) | Mfg (8) | Class (6) | Index (4) | ID (6) |
+        dev_type = (arb_id >> 24) & 0x1F
+        mfg = (arb_id >> 16) & 0xFF
+        api_class = (arb_id >> 10) & 0x3F
+        api_index = (arb_id >> 6) & 0x0F
+        dev_id = arb_id & 0x3F
         
-        while self.running:
-            try:
-                self.bus.send(msg)
-            except Exception as e:
-                logger.error(f"Send heartbeat error: {e}")
-            
-            time.sleep(0.02) # 20 ms interval
+        data_hex = " ".join(f"{b:02X}" for b in msg.data)
+        return f"ID: 0x{arb_id:08X} [T:{dev_type:2} M:{mfg:3} C:{api_class:2} I:{api_index:2} D:{dev_id:2}] Data: {data_hex}"
 
     def update_ui(self):
         now = time.time()
@@ -427,7 +427,7 @@ class CanMonitorApp:
             l["tof"].config(text=f"Dist: {t['Distance']} mm | Status: {t['Status']}")
             
             e = d["Encoder"]
-            l["enc"].config(text=f"E1: {e['Enc1_Abs']:.2f}/{e['Enc1_Inc']:.2f}° | E2: {e['Enc2_Abs']:.2f}/{e['Enc2_Inc']:.2f}°")
+            l["enc"].config(text=f"E1: {e['Enc1_Abs']:.2f}°/{e['Enc1_Inc']}c | E2: {e['Enc2_Abs']:.2f}°/{e['Enc2_Inc']}c")
 
         for dev_id in to_delete:
             logger.info(f"Removing timed out device: {dev_id}")

@@ -122,6 +122,6 @@ When running in application mode, the device broadcasts status messages using AP
 - **ID**: `0x0A2A14C0`
 - **Data**:
     - **Byte 0-1**: Encoder 1 Absolute Position (0.01°, Little Endian)
-    - **Byte 2-3**: Encoder 1 Incremental Position (0.01°, Little Endian)
+    - **Byte 2-3**: Encoder 1 Incremental Position (counts, Little Endian)
     - **Byte 4-5**: Encoder 2 Absolute Position (0.01°, Little Endian)
-    - **Byte 6-7**: Encoder 2 Incremental Position (0.01°, Little Endian)
+    - **Byte 6-7**: Encoder 2 Incremental Position (counts, Little Endian)

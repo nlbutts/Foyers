@@ -562,6 +562,9 @@ void Bootloader_CheckAndJump(void) {
     if (magic == MAGIC_WORD_PROGRAM_CONFIG) {
         Log("Config Program Magic detected. Programming config from RAM.");
         *MAGIC_WORD_ADDR = 0; // Clear magic word
+        BootConfig_t* ramConfig = RAM_CONFIG_ADDR;
+        Log("RAM Config: Magic=0x%08X, DevID=%lu, AppSize=%lu, AppCRC=0x%08X, CRC=0x%08X",
+            ramConfig->magic, ramConfig->deviceID, ramConfig->appSize, ramConfig->appCrc, ramConfig->crc);
         ProgramConfigFromRAM();
         return; // ProgramConfigFromRAM will reset on success
     }
