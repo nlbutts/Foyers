@@ -1,0 +1,5 @@
+build/*
+BackPorch-backups
+Foyers-backups
+*.step
+production

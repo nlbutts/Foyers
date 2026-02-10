@@ -1,0 +1,38 @@
+' filepath: untitled:Untitled-1
+@startuml
+!define COMPONENT(name, color) component name <<color>>
+
+' Input/Sensor Components
+component "TOF Sensor" as tof <<green>>
+component "I2C Translator" as i2c <<yellow>>
+component "Push Button" as btn <<green>>
+component "Power Monitor" as pwr_mon <<blue>>
+
+' Main Processor
+component "STM32G431 CPU" as cpu <<violet>>
+
+' Output Components
+component "LED1" as led1 <<red>>
+component "LED2" as led2 <<red>>
+
+' Power Components
+component "3.3V Regulator" as reg33 <<red>>
+component "2.8V Regulator" as reg28 <<red>>
+component "12V Buck" as buck12 <<red>>
+
+' Connector
+component "Main Connector J3" as j3 <<blue>>
+
+' Connections
+tof --> cpu
+i2c --> cpu
+btn --> cpu
+pwr_mon --> cpu
+cpu --> led1
+cpu --> led2
+reg33 --> cpu
+reg28 --> cpu
+buck12 --> cpu
+j3 --> cpu
+
+@enduml
