@@ -113,7 +113,7 @@ When running in application mode, the device broadcasts status messages using AP
 - **ID**: `0x0A2A1480`
 - **Data**:
     - **Byte 0**: ST TOF API Status
-    - **Byte 1**: Reserved
+    - **Byte 1**: Bit 0 SDA limit switch, Bit 1 SCL limit switch
     - **Byte 2-3**: Distance (mm, Little Endian)
     - **Byte 4-5**: Ambient Mcps (Little Endian)
     - **Byte 6-7**: Signal Mcps (Little Endian)
