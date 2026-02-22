@@ -72,10 +72,10 @@ const osThreadAttr_t defaultTask_attributes = {
   .priority = (osPriority_t) osPriorityNormal,
   .stack_size = 4096 * 4
 };
-/* Definitions for canRxTask */
-osThreadId_t canRxTaskHandle;
-const osThreadAttr_t canRxTask_attributes = {
-  .name = "canRxTask",
+/* Definitions for canRx */
+osThreadId_t canRxHandle;
+const osThreadAttr_t canRx_attributes = {
+  .name = "canRx",
   .priority = (osPriority_t) osPriorityLow,
   .stack_size = 128 * 4
 };
@@ -86,12 +86,12 @@ const osThreadAttr_t monTask_attributes = {
   .priority = (osPriority_t) osPriorityLow,
   .stack_size = 1024 * 4
 };
-/* Definitions for canTxTask */
-osThreadId_t canTxTaskHandle;
-const osThreadAttr_t canTxTask_attributes = {
-  .name = "canTxTask",
+/* Definitions for canTx */
+osThreadId_t canTxHandle;
+const osThreadAttr_t canTx_attributes = {
+  .name = "canTx",
   .priority = (osPriority_t) osPriorityBelowNormal,
-  .stack_size = 128 * 4
+  .stack_size = 256 * 4
 };
 /* USER CODE BEGIN PV */
 osMutexId_t uartMutexHandle;
@@ -272,7 +272,8 @@ int main(void)
   MX_ADC1_Init();
   MX_FDCAN1_Init();
   MX_TIM3_Init();
-  MX_I2C1_Init();
+  // TODO Temp disable it for GPIO Limit switch inputs
+  //MX_I2C1_Init();
   MX_TIM1_Init();
   MX_USART5_UART_Init();
   MX_TIM2_Init();
@@ -313,14 +314,14 @@ int main(void)
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  /* creation of canRxTask */
-  canRxTaskHandle = osThreadNew(canRxTask, NULL, &canRxTask_attributes);
+  /* creation of canRx */
+  canRxHandle = osThreadNew(canRxTask, NULL, &canRx_attributes);
 
   /* creation of monTask */
   monTaskHandle = osThreadNew(StartMonTask, NULL, &monTask_attributes);
 
-  /* creation of canTxTask */
-  canTxTaskHandle = osThreadNew(canTxTask, NULL, &canTxTask_attributes);
+  /* creation of canTx */
+  canTxHandle = osThreadNew(canTxTask, NULL, &canTx_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -932,7 +933,7 @@ void StartDefaultTask(void *argument)
 
 /* USER CODE BEGIN Header_canRxTask */
 /**
-* @brief Function implementing the canTask thread.
+* @brief Function implementing the canRx thread.
 * @param argument: Not used
 * @retval None
 */
@@ -1004,11 +1005,11 @@ void canRxTask(void *argument)
                 // Set Magic Word and Reboot (survives bootloader startup at this address)
                 *MAGIC_WORD_ADDR = MAGIC_WORD_PROGRAM_FW;
                 __disable_irq();
-                HAL_NVIC_SystemReset();    
-            } 
+                HAL_NVIC_SystemReset();
+              } 
+            }
         }
     }
-  }
   /* USER CODE END canRxTask */
 }
 
@@ -1103,7 +1104,7 @@ void StartMonTask(void *argument)
 
 /* USER CODE BEGIN Header_canTxTask */
 /**
-* @brief Function implementing the canTxTask thread.
+* @brief Function implementing the canTx thread.
 * @param argument: Not used
 * @retval None
 */
@@ -1111,6 +1112,13 @@ void StartMonTask(void *argument)
 void canTxTask(void *argument)
 {
   /* USER CODE BEGIN canTxTask */
+  // TODO: Use the QWIIC port as a limit switch input.
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
   HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
@@ -1157,6 +1165,17 @@ void canTxTask(void *argument)
   txEncStatus.FDFormat = FDCAN_CLASSIC_CAN;
   txEncStatus.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
   txEncStatus.MessageMarker = 0;
+
+  FDCAN_TxHeaderTypeDef txTofStatus;
+  txTofStatus.Identifier = BACK_PORCH_TOF_STATUS | g_device_id;
+  txTofStatus.IdType = FDCAN_EXTENDED_ID;
+  txTofStatus.TxFrameType = FDCAN_DATA_FRAME;
+  txTofStatus.DataLength = FDCAN_DLC_BYTES_8;
+  txTofStatus.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+  txTofStatus.BitRateSwitch = FDCAN_BRS_OFF;
+  txTofStatus.FDFormat = FDCAN_CLASSIC_CAN;
+  txTofStatus.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+  txTofStatus.MessageMarker = 0;
 
   uint8_t TxData[8];
 
@@ -1240,6 +1259,7 @@ void canTxTask(void *argument)
     TxData[6] = (uint8_t)((voltage_mv >> 8) & 0xFF);
     TxData[7] = (uint8_t)temp_c;
 
+    while (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) == 0) osDelay(1);
     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txGeneralStatus, TxData);
 
     // Populate TxData for SW Version
@@ -1251,6 +1271,8 @@ void canTxTask(void *argument)
     TxData[5] = (uint8_t)(BUILD_NUMBER & 0xFF);
     TxData[6] = (uint8_t)((BUILD_NUMBER >> 8) & 0xFF);
     TxData[7] = (uint8_t)((BUILD_NUMBER >> 16) & 0xFF);
+    
+    while (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) == 0) osDelay(1);
     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txSwVersion, TxData);
 
     TxData[0] = (uint8_t)(pulse_width_1000deg & 0xFF);
@@ -1262,7 +1284,26 @@ void canTxTask(void *argument)
     TxData[5] = 0;
     TxData[6] = 0;
     TxData[7] = 0;
+
+    while (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) == 0) osDelay(1);
     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txEncStatus, TxData);
+
+    uint8_t limit_switches = 0;
+    // Bit 0: SDA (PA10), Bit 1: SCL (PA9)
+    if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10) == GPIO_PIN_RESET) limit_switches |= 0x01;
+    if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9) == GPIO_PIN_RESET) limit_switches |= 0x02;
+
+    TxData[0] = 0; // API Status
+    TxData[1] = limit_switches;
+    TxData[2] = 0; // Distance low
+    TxData[3] = 0; // Distance high
+    TxData[4] = 0; // Ambient low
+    TxData[5] = 0; // Ambient high
+    TxData[6] = 0; // Signal low
+    TxData[7] = 0; // Signal high
+    
+    while (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) == 0) osDelay(1);
+    HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txTofStatus, TxData);
   }
   /* USER CODE END canTxTask */
 }

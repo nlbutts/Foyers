@@ -306,8 +306,9 @@ class CanMonitorApp:
 
         elif api_id == 0x52: # Class 5, Index 2 (TOF)
             status = msg.data[0]
+            limits = msg.data[1]
             dist, amb, sig = struct.unpack("<HHH", msg.data[2:8])
-            device["data"]["TOF"] = {"Status": status, "Distance": dist, "Ambient": amb, "Signal": sig}
+            device["data"]["TOF"] = {"Status": status, "Limits": limits, "Distance": dist, "Ambient": amb, "Signal": sig}
 
         elif api_id == 0x53: # Class 5, Index 3 (Encoder)
             e1a, e1i, e2a, e2i = struct.unpack("<HhHh", msg.data)
@@ -328,7 +329,7 @@ class CanMonitorApp:
         
         row2 = ttk.Frame(frame)
         row2.pack(fill="x")
-        labels["tof"] = ttk.Label(row2, text="Dist: - mm | Status: -", style="Data.TLabel")
+        labels["tof"] = ttk.Label(row2, text="Dist: - mm | Status: - | LS: (SDA:-, SCL:-)", style="Data.TLabel")
         labels["tof"].pack(side="left", padx=5)
         labels["enc"] = ttk.Label(row2, text="E1: -/- deg | E2: -/- deg", style="Data.TLabel")
         labels["enc"].pack(side="left", padx=20)
@@ -454,7 +455,9 @@ class CanMonitorApp:
             l["gen"].config(text=f"Current: {g['Current']} mA | Volt: {g['Voltage']} mV")
             
             t = d["TOF"]
-            l["tof"].config(text=f"Dist: {t['Distance']} mm | Status: {t['Status']}")
+            sda = "P" if t.get("Limits", 0) & 0x01 else "R"
+            scl = "P" if t.get("Limits", 0) & 0x02 else "R"
+            l["tof"].config(text=f"Dist: {t['Distance']} mm | Status: {t['Status']} | LS: (SDA:{sda}, SCL:{scl})")
             
             e = d["Encoder"]
             l["enc"].config(text=f"E1: {e['Enc1_Abs']:.2f}°/{e['Enc1_Inc']}c | E2: {e['Enc2_Abs']:.2f}°/{e['Enc2_Inc']}c")
