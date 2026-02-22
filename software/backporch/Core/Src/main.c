@@ -69,7 +69,7 @@ UART_HandleTypeDef huart5;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityHigh,
   .stack_size = 4096 * 4
 };
 /* Definitions for canRx */
@@ -679,7 +679,7 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 0;
+  htim2.Init.Prescaler = 63;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 4294967295;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -1008,8 +1008,9 @@ void canRxTask(void *argument)
                 HAL_NVIC_SystemReset();
               } 
             }
-        }
     }
+    osDelay(1);
+  }
   /* USER CODE END canRxTask */
 }
 
@@ -1035,7 +1036,7 @@ void StartMonTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(2000);
+    osDelay(1000);
     HAL_IWDG_Refresh(&hiwdg);
     
     // Clear screen and home cursor
