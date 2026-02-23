@@ -273,7 +273,7 @@ int main(void)
   MX_FDCAN1_Init();
   MX_TIM3_Init();
   // TODO Temp disable it for GPIO Limit switch inputs
-  //MX_I2C1_Init();
+  MX_I2C1_Init();
   MX_TIM1_Init();
   MX_USART5_UART_Init();
   MX_TIM2_Init();
@@ -1096,6 +1096,20 @@ void StartMonTask(void *argument)
     //          (unsigned long)can_rx_msg_count, (unsigned long)last_rx_id);
     // uart5_puts(stats_buffer);
 
+    // I2C Scan
+    uart5_puts("\r\n--- I2C Bus Scan ---\r\n");
+    int found = 0;
+    for (uint16_t i = 1; i < 128; i++) {
+        if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(i << 1), 3, 2) == HAL_OK) {
+            sprintf(stats_buffer, "Found Device at 0x%02X\r\n", i);
+            uart5_puts(stats_buffer);
+            found++;
+        }
+    }
+    if (found == 0) {
+        uart5_puts("No devices found.\r\n");
+    }
+
     uart5_puts("============================================================\r\n");
     HAL_GPIO_TogglePin(SYS_STATUS_GPIO_Port, SYS_STATUS_Pin);
 
@@ -1114,12 +1128,12 @@ void canTxTask(void *argument)
 {
   /* USER CODE BEGIN canTxTask */
   // TODO: Use the QWIIC port as a limit switch input.
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  // GPIO_InitTypeDef GPIO_InitStruct = {0};
+  // GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
+  // GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  // GPIO_InitStruct.Pull = GPIO_PULLUP;
+  // GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  // HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
   HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);

@@ -54,12 +54,21 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    Drivers/BSP/Components/vl53l0x/vl53l0x_api.c
+    Drivers/BSP/Components/vl53l0x/vl53l0x_api_calibration.c
+    Drivers/BSP/Components/vl53l0x/vl53l0x_api_core.c
+    Drivers/BSP/Components/vl53l0x/vl53l0x_api_ranging.c
+    Drivers/BSP/Components/vl53l0x/vl53l0x_api_strings.c
+    Drivers/BSP/Components/vl53l0x/vl53l0x_platform_log.c
+    Drivers/BSP/X-NUCLEO-53L0A1/vl53l0x_platform.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
     ${CMAKE_CURRENT_SOURCE_DIR}/../common
+    Drivers/BSP/Components/vl53l0x
+    Drivers/BSP/X-NUCLEO-53L0A1
 )
 
 # Add project symbols (macros)
