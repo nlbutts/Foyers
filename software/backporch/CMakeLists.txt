@@ -54,6 +54,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    Core/Src/app_tof.c
     Drivers/BSP/Components/vl53l0x/vl53l0x_api.c
     Drivers/BSP/Components/vl53l0x/vl53l0x_api_calibration.c
     Drivers/BSP/Components/vl53l0x/vl53l0x_api_core.c

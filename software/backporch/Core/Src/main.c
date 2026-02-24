@@ -32,9 +32,11 @@
 #include "version.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "app_tof.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
+typedef StaticQueue_t osStaticMessageQDef_t;
 /* USER CODE BEGIN PTD */
 /* USER CODE END PTD */
 
@@ -69,14 +71,14 @@ UART_HandleTypeDef huart5;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .priority = (osPriority_t) osPriorityHigh,
-  .stack_size = 4096 * 4
+  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 128 * 4
 };
 /* Definitions for canRx */
 osThreadId_t canRxHandle;
 const osThreadAttr_t canRx_attributes = {
   .name = "canRx",
-  .priority = (osPriority_t) osPriorityLow,
+  .priority = (osPriority_t) osPriorityHigh,
   .stack_size = 128 * 4
 };
 /* Definitions for monTask */
@@ -91,7 +93,25 @@ osThreadId_t canTxHandle;
 const osThreadAttr_t canTx_attributes = {
   .name = "canTx",
   .priority = (osPriority_t) osPriorityBelowNormal,
+  .stack_size = 128 * 4
+};
+/* Definitions for tof */
+osThreadId_t tofHandle;
+const osThreadAttr_t tof_attributes = {
+  .name = "tof",
+  .priority = (osPriority_t) osPriorityLow,
   .stack_size = 256 * 4
+};
+/* Definitions for tofQ */
+osMessageQueueId_t tofQHandle;
+uint8_t tofQBuffer[ 16 * sizeof( uint32_t ) ];
+osStaticMessageQDef_t tofQControlBlock;
+const osMessageQueueAttr_t tofQ_attributes = {
+  .name = "tofQ",
+  .cb_mem = &tofQControlBlock,
+  .cb_size = sizeof(tofQControlBlock),
+  .mq_mem = &tofQBuffer,
+  .mq_size = sizeof(tofQBuffer)
 };
 /* USER CODE BEGIN PV */
 osMutexId_t uartMutexHandle;
@@ -166,6 +186,7 @@ void StartDefaultTask(void *argument);
 void canRxTask(void *argument);
 void StartMonTask(void *argument);
 void canTxTask(void *argument);
+void tofTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -272,7 +293,6 @@ int main(void)
   MX_ADC1_Init();
   MX_FDCAN1_Init();
   MX_TIM3_Init();
-  // TODO Temp disable it for GPIO Limit switch inputs
   MX_I2C1_Init();
   MX_TIM1_Init();
   MX_USART5_UART_Init();
@@ -306,6 +326,10 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
+  /* Create the queue(s) */
+  /* creation of tofQ */
+  tofQHandle = osMessageQueueNew (16, sizeof(uint32_t), &tofQ_attributes);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -322,6 +346,9 @@ int main(void)
 
   /* creation of canTx */
   canTxHandle = osThreadNew(canTxTask, NULL, &canTx_attributes);
+
+  /* creation of tof */
+  tofHandle = osThreadNew(tofTask, NULL, &tof_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -679,7 +706,7 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 63;
+  htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 4294967295;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -1083,34 +1110,25 @@ void StartMonTask(void *argument)
         vPortFree(pxTaskStatusArray);
     }
  
-    // Heap Info
-    // uart5_puts("\r\n--- Memory Info ---\r\n");
-    // char heap_str[64];
-    // sprintf(heap_str, "Free Heap: %u bytes\r\n", (unsigned int)xPortGetFreeHeapSize());
-    // uart5_puts(heap_str);
+    //Heap Info
+    uart5_puts("\r\n--- Memory Info ---\r\n");
+    char heap_str[64];
+    sprintf(heap_str, "Free Heap: %u bytes\r\n", (unsigned int)xPortGetFreeHeapSize());
+    uart5_puts(heap_str);
     
-    // snprintf(stats_buffer, sizeof(stats_buffer),
-    //          "\r\n--- CAN Debug ---\r\n"
-    //          "CAN Rx Count: %lu\r\n"
-    //          "Last Rx ID: 0x%08lX\r\n",
-    //          (unsigned long)can_rx_msg_count, (unsigned long)last_rx_id);
-    // uart5_puts(stats_buffer);
+    snprintf(stats_buffer, sizeof(stats_buffer),
+             "\r\n--- CAN Debug ---\r\n"
+             "CAN Rx Count: %lu\r\n"
+             "Last Rx ID: 0x%08lX\r\n",
+             (unsigned long)can_rx_msg_count, (unsigned long)last_rx_id);
+    uart5_puts(stats_buffer);
 
-    // I2C Scan
-    uart5_puts("\r\n--- I2C Bus Scan ---\r\n");
-    int found = 0;
-    for (uint16_t i = 1; i < 128; i++) {
-        if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(i << 1), 3, 2) == HAL_OK) {
-            sprintf(stats_buffer, "Found Device at 0x%02X\r\n", i);
-            uart5_puts(stats_buffer);
-            found++;
-        }
-    }
-    if (found == 0) {
-        uart5_puts("No devices found.\r\n");
-    }
-
-    uart5_puts("============================================================\r\n");
+    snprintf(stats_buffer, sizeof(stats_buffer),
+             "\r\n--- ToF Sensor ---\r\n"
+             "Distance: %u mm\r\n"
+             "Status: %u\r\n",
+             tof_distance, tof_status);
+    uart5_puts(stats_buffer);
     HAL_GPIO_TogglePin(SYS_STATUS_GPIO_Port, SYS_STATUS_Pin);
 
   }
@@ -1199,9 +1217,10 @@ void canTxTask(void *argument)
   sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
 
   /* Infinite loop */
+  TickType_t xLastWakeTime = xTaskGetTickCount();
   for(;;)
   {
-    osDelay(100);
+    vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(100));
 
     uint32_t vref_mv = 3300;
     uint16_t voltage_mv = 0;
@@ -1308,10 +1327,15 @@ void canTxTask(void *argument)
     if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10) == GPIO_PIN_RESET) limit_switches |= 0x01;
     if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9) == GPIO_PIN_RESET) limit_switches |= 0x02;
 
-    TxData[0] = 0; // API Status
+    static uint32_t last_tofMsg = (8191 << 8) | 255; // Default/Invalid
+    osMessageQueueGet(tofQHandle, &last_tofMsg, NULL, 0); // Non-blocking
+    uint16_t tof_distance = (uint16_t)(last_tofMsg >> 8);
+    uint8_t tof_status = (uint8_t)(last_tofMsg & 0xFF);
+
+    TxData[0] = tof_status; // API Status
     TxData[1] = limit_switches;
-    TxData[2] = 0; // Distance low
-    TxData[3] = 0; // Distance high
+    TxData[2] = (uint8_t)(tof_distance & 0xFF); // Distance low
+    TxData[3] = (uint8_t)((tof_distance >> 8) & 0xFF); // Distance high
     TxData[4] = 0; // Ambient low
     TxData[5] = 0; // Ambient high
     TxData[6] = 0; // Signal low
@@ -1321,6 +1345,35 @@ void canTxTask(void *argument)
     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &txTofStatus, TxData);
   }
   /* USER CODE END canTxTask */
+}
+
+/* USER CODE BEGIN Header_tofTask */
+/**
+* @brief Function implementing the tof thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_tofTask */
+void tofTask(void *argument)
+{
+  /* USER CODE BEGIN tofTask */
+  app_tof_init();
+
+  /* Infinite loop */
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  for(;;)
+  {
+    vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(50));
+    
+    uint16_t distance = 8191;
+    uint8_t status = 255;
+    app_tof_read(&distance, &status);
+    
+    // Pack distance and status into a 32-bit msg
+    uint32_t msg = ((uint32_t)distance << 8) | status;
+    osMessageQueuePut(tofQHandle, &msg, 0, 0); // Non-blocking put
+  }
+  /* USER CODE END tofTask */
 }
 
 /**
