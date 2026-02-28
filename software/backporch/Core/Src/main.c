@@ -1123,12 +1123,6 @@ void StartMonTask(void *argument)
              (unsigned long)can_rx_msg_count, (unsigned long)last_rx_id);
     uart5_puts(stats_buffer);
 
-    snprintf(stats_buffer, sizeof(stats_buffer),
-             "\r\n--- ToF Sensor ---\r\n"
-             "Distance: %u mm\r\n"
-             "Status: %u\r\n",
-             tof_distance, tof_status);
-    uart5_puts(stats_buffer);
     HAL_GPIO_TogglePin(SYS_STATUS_GPIO_Port, SYS_STATUS_Pin);
 
   }
@@ -1145,14 +1139,6 @@ void StartMonTask(void *argument)
 void canTxTask(void *argument)
 {
   /* USER CODE BEGIN canTxTask */
-  // TODO: Use the QWIIC port as a limit switch input.
-  // GPIO_InitTypeDef GPIO_InitStruct = {0};
-  // GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
-  // GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  // GPIO_InitStruct.Pull = GPIO_PULLUP;
-  // GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  // HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
   HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
   HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
 
@@ -1357,7 +1343,16 @@ void canTxTask(void *argument)
 void tofTask(void *argument)
 {
   /* USER CODE BEGIN tofTask */
-  app_tof_init();
+  if (app_tof_init() != 0)
+  {
+    // TODO: Use the QWIIC port as a limit switch input.
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  }
 
   /* Infinite loop */
   TickType_t xLastWakeTime = xTaskGetTickCount();

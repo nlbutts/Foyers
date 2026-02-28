@@ -8,7 +8,7 @@ extern I2C_HandleTypeDef hi2c1;
 static VL53L0X_Dev_t tof_dev;
 static VL53L0X_DEV p_tof_dev = &tof_dev;
 
-void app_tof_init(void) {
+int app_tof_init(void) {
     uint32_t refSpadCount;
     uint8_t isApertureSpads;
     uint8_t VhvSettings;
@@ -22,22 +22,23 @@ void app_tof_init(void) {
     VL53L0X_Error status = VL53L0X_ERROR_NONE;
 
     status = VL53L0X_DataInit(p_tof_dev);
-    if (status != VL53L0X_ERROR_NONE) return;
+    if (status != VL53L0X_ERROR_NONE) return (int)status;
 
     status = VL53L0X_StaticInit(p_tof_dev);
-    if (status != VL53L0X_ERROR_NONE) return;
+    if (status != VL53L0X_ERROR_NONE) return (int)status;
 
     status = VL53L0X_PerformRefCalibration(p_tof_dev, &VhvSettings, &PhaseCal);
-    if (status != VL53L0X_ERROR_NONE) return;
+    if (status != VL53L0X_ERROR_NONE) return (int)status;
 
     status = VL53L0X_PerformRefSpadManagement(p_tof_dev, &refSpadCount, &isApertureSpads);
-    if (status != VL53L0X_ERROR_NONE) return;
+    if (status != VL53L0X_ERROR_NONE) return (int)status;
 
     // Setup for continuous ranging
     status = VL53L0X_SetDeviceMode(p_tof_dev, VL53L0X_DEVICEMODE_CONTINUOUS_RANGING);
-    if (status != VL53L0X_ERROR_NONE) return;
+    if (status != VL53L0X_ERROR_NONE) return (int)status;
 
     status = VL53L0X_StartMeasurement(p_tof_dev);
+    return (int)status;
 }
 
 void app_tof_read(uint16_t *distance_mm, uint8_t *range_status) {

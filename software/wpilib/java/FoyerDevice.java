@@ -1,7 +1,8 @@
-package frc.robot;
+package com.qnibbles.hardware;
 
 import edu.wpi.first.hal.CANData;
 import edu.wpi.first.wpilibj.CAN;
+import edu.wpi.first.wpilibj.Timer;
 
 /**
  * Driver for the Foyer device using WPILib CAN.
@@ -10,38 +11,40 @@ public class FoyerDevice {
     private final CAN m_can;
     private final CANData m_data = new CANData();
 
-    public static class VersionStatus {
-        public long uniqueID;
-        public boolean isAppMode;
-        public int major;
-        public int minor;
-        public long build;
-        public long timestamp;
-    }
+    public record VersionStatus(
+        long uniqueID,
+        boolean isAppMode,
+        int major,
+        int minor,
+        long build,
+        long timestamp
+    ) {}
 
-    public static class FoyerStatus {
-        public long uniqueID;
-        public int currentMA;
-        public double voltageV;
-        public int tempC;
-        public long timestamp;
-    }
+    public record FoyerStatus(
+        long uniqueID,
+        int currentMA,
+        double voltageV,
+        int tempC,
+        long timestamp
+    ) {}
 
-    public static class TOFStatus {
-        public int apiStatus;
-        public int distanceMM;
-        public int ambientMcps;
-        public int signalMcps;
-        public long timestamp;
-    }
+    public record TOFStatus(
+        int apiStatus,
+        Boolean limit1,
+        Boolean limit2,
+        int distanceMM,
+        int ambientMcps,
+        int signalMcps,
+        long timestamp
+    ) {}
 
-    public static class EncoderStatus {
-        public double enc1AbsDeg;
-        public int enc1Inc;
-        public double enc2AbsDeg;
-        public int enc2Inc;
-        public long timestamp;
-    }
+    public record EncoderStatus(
+        double enc1AbsDeg,
+        int enc1Inc,
+        double enc2AbsDeg,
+        int enc2Inc,
+        long timestamp
+    ) {}
 
     /**
      * @param deviceId The CAN ID configured on the device (0-63).
@@ -56,22 +59,23 @@ public class FoyerDevice {
      * @return VersionStatus object or null if no new data.
      */
     public VersionStatus getVersionStatus() {
-        if (m_can.readPacketNew(0x50, m_data)) {
-            VersionStatus s = new VersionStatus();
-            s.uniqueID = ((long)m_data.data[0] & 0xFF) | 
-                         (((long)m_data.data[1] & 0xFF) << 8) | 
-                         (((long)m_data.data[2] & 0xFF) << 16) | 
-                         (((long)m_data.data[3] & 0xFF) << 24);
-            s.isAppMode = (m_data.data[4] & 0x01) != 0;
-            s.major = (m_data.data[4] >> 1) & 0x07;
-            s.minor = (m_data.data[4] >> 4) & 0x0F;
-            s.build = ((long)m_data.data[5] & 0xFF) | 
-                      (((long)m_data.data[6] & 0xFF) << 8) | 
-                      (((long)m_data.data[7] & 0xFF) << 16);
-            s.timestamp = m_data.timestamp;
-            return s;
+        if (m_can.readPacketLatest(0x50, m_data)) {
+            return new VersionStatus(
+                ((long)m_data.data[0] & 0xFF) |
+                (((long)m_data.data[1] & 0xFF) << 8) |
+                (((long)m_data.data[2] & 0xFF) << 16) |
+                (((long)m_data.data[3] & 0xFF) << 24),
+                (m_data.data[4] & 0x01) != 0,
+                (m_data.data[4] >> 1) & 0x07,
+                (m_data.data[4] >> 4) & 0x0F,
+                ((long)m_data.data[5] & 0xFF) |
+                (((long)m_data.data[6] & 0xFF) << 8) |
+                (((long)m_data.data[7] & 0xFF) << 16),
+                m_data.timestamp
+            );
+        } else {
+            return null;
         }
-        return null;
     }
 
     /**
@@ -79,19 +83,20 @@ public class FoyerDevice {
      * @return FoyerStatus object or null if no new data.
      */
     public FoyerStatus getGeneralStatus() {
-        if (m_can.readPacketNew(0x51, m_data)) {
-            FoyerStatus s = new FoyerStatus();
-            s.uniqueID = ((long)m_data.data[0] & 0xFF) | 
-                         (((long)m_data.data[1] & 0xFF) << 8) | 
-                         (((long)m_data.data[2] & 0xFF) << 16) | 
-                         (((long)m_data.data[3] & 0xFF) << 24);
-            s.currentMA = m_data.data[4] & 0xFF;
-            s.voltageV = ((m_data.data[5] & 0xFF) | ((m_data.data[6] & 0xFF) << 8)) / 1000.0;
-            s.tempC = m_data.data[7];
-            s.timestamp = m_data.timestamp;
-            return s;
+        if (m_can.readPacketLatest(0x51, m_data)) {
+            return new FoyerStatus(
+                ((long)m_data.data[0] & 0xFF) |
+                (((long)m_data.data[1] & 0xFF) << 8) |
+                (((long)m_data.data[2] & 0xFF) << 16) |
+                (((long)m_data.data[3] & 0xFF) << 24),
+                m_data.data[4] & 0xFF,
+                ((m_data.data[5] & 0xFF) | ((m_data.data[6] & 0xFF) << 8)) / 1000.0,
+                m_data.data[7],
+                m_data.timestamp
+            );
+        } else {
+            return null;
         }
-        return null;
     }
 
     /**
@@ -99,16 +104,19 @@ public class FoyerDevice {
      * @return TOFStatus object or null if no new data.
      */
     public TOFStatus getTOFStatus() {
-        if (m_can.readPacketNew(0x52, m_data)) {
-            TOFStatus s = new TOFStatus();
-            s.apiStatus = m_data.data[0] & 0xFF;
-            s.distanceMM = (m_data.data[2] & 0xFF) | ((m_data.data[3] & 0xFF) << 8);
-            s.ambientMcps = (m_data.data[4] & 0xFF) | ((m_data.data[5] & 0xFF) << 8);
-            s.signalMcps = (m_data.data[6] & 0xFF) | ((m_data.data[7] & 0xFF) << 8);
-            s.timestamp = m_data.timestamp;
-            return s;
+        if (m_can.readPacketLatest(0x52, m_data)) {
+            return new TOFStatus(
+                m_data.data[0] & 0xFF,
+                (m_data.data[1] & 1) != 0,
+                (m_data.data[1] & 2) != 0,
+                (m_data.data[2] & 0xFF) | ((m_data.data[3] & 0xFF) << 8),
+                (m_data.data[4] & 0xFF) | ((m_data.data[5] & 0xFF) << 8),
+                (m_data.data[6] & 0xFF) | ((m_data.data[7] & 0xFF) << 8),
+                m_data.timestamp
+            );
+        } else {
+            return null;
         }
-        return null;
     }
 
     /**
@@ -116,15 +124,42 @@ public class FoyerDevice {
      * @return EncoderStatus object or null if no new data.
      */
     public EncoderStatus getEncoderStatus() {
-        if (m_can.readPacketNew(0x53, m_data)) {
-            EncoderStatus s = new EncoderStatus();
-            s.enc1AbsDeg = ((m_data.data[0] & 0xFF) | ((m_data.data[1] & 0xFF) << 8)) / 100.0;
-            s.enc1Inc = (short)((m_data.data[2] & 0xFF) | ((m_data.data[3] & 0xFF) << 8));
-            s.enc2AbsDeg = ((m_data.data[4] & 0xFF) | ((m_data.data[5] & 0xFF) << 8)) / 100.0;
-            s.enc2Inc = (short)((m_data.data[6] & 0xFF) | ((m_data.data[7] & 0xFF) << 8));
-            s.timestamp = m_data.timestamp;
-            return s;
+        if (m_can.readPacketLatest(0x53, m_data)) {
+            return new EncoderStatus(
+                ((m_data.data[0] & 0xFF) | ((m_data.data[1] & 0xFF) << 8)) / 100.0,
+                (short)((m_data.data[2] & 0xFF) | ((m_data.data[3] & 0xFF) << 8)),
+                ((m_data.data[4] & 0xFF) | ((m_data.data[5] & 0xFF) << 8)) / 100.0,
+                (short)((m_data.data[6] & 0xFF) | ((m_data.data[7] & 0xFF) << 8)),
+                m_data.timestamp
+            );
+        } else {
+            return null;
         }
-        return null;
+    }
+
+    /**
+     * Determines whether the TOF sensor is connected.
+     * @return {@code true} if the last frame is less than 100ms old.
+    */
+    public boolean isTOFSensorConnected() {
+        if (!m_can.readPacketLatest(0x52, m_data)) {
+            return false;
+        } else {
+            long currentTime = (long)(Timer.getTimestamp() * 1000.0);
+            return (currentTime - m_data.timestamp) < 100L;
+        }
+    }
+
+    /**
+     * Determines whether the through-bore encoder is connected.
+     * @return {@code true} if the last frame is less than 100ms old.
+    */
+    public boolean isEncoderConnected() {
+        if (!m_can.readPacketLatest(0x53, m_data)) {
+            return false;
+        } else {
+            long currentTime = (long)(Timer.getTimestamp() * 1000.0);
+            return (currentTime - m_data.timestamp) < 100L;
+        }
     }
 }
