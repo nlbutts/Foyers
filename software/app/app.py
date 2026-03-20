@@ -5,6 +5,8 @@ import time
 import tkinter as tk
 import zlib
 import logging
+import socket
+from collections import deque
 from tkinter import ttk, filedialog
 
 # Configure logging
@@ -17,6 +19,50 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+class UDPBus:
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.settimeout(0.1)
+        self.last_heartbeat = 0
+        self._send_heartbeat()
+
+    def _send_heartbeat(self):
+        # Send a heartbeat so server knows where we are
+        try:
+            self.sock.sendto(struct.pack(">IB", 0, 0), (self.ip, self.port))
+        except:
+            pass
+        self.last_heartbeat = time.time()
+
+    def recv(self, timeout=None):
+        if time.time() - self.last_heartbeat > 1.0:
+            self._send_heartbeat()
+            
+        if timeout is not None:
+            self.sock.settimeout(timeout)
+        try:
+            data, addr = self.sock.recvfrom(1024)
+            if len(data) >= 5:
+                can_id, length = struct.unpack(">IB", data[:5])
+                payload = data[5:5+length]
+                return can.Message(arbitration_id=can_id, data=payload, is_extended_id=True)
+        except socket.timeout:
+            pass
+        except Exception as e:
+            logger.error(f"UDPBus recv error: {e}")
+        return None
+
+    def send(self, msg):
+        packet = struct.pack(">IB", msg.arbitration_id, len(msg.data)) + bytes(msg.data)
+        self.sock.sendto(packet, (self.ip, self.port))
+        logger.debug(f"UDPBus TX: ID=0x{msg.arbitration_id:08X} Len={len(msg.data)} to {self.ip}:{self.port}")
+
+    def shutdown(self):
+        self.sock.close()
+
 
 class CanMonitorApp:
     def __init__(self, root):
@@ -38,28 +84,92 @@ class CanMonitorApp:
         self.last_msg_time = time.time()
         self.total_bits = 0
         self.last_util_time = time.time()
-        self.bus_util_str = tk.StringVar(value="Bus Util: 0.0%")
+        self.bus_util_str = tk.StringVar(value="Bus: 0.0% | 1s Avg: 0.0% | Max: 0.0%")
+        self.util_history = deque(maxlen=10)
+        self.max_bus_util = 0.0
+        
+        # Connection variables
+        self.conn_type = tk.StringVar(value="CANable (slcan)")
+        self.slcan_port = tk.StringVar(value="COM5")
+        self.slcan_bitrate = tk.IntVar(value=1000000)
+        self.udp_ip = tk.StringVar(value="10.TE.AM.2")
+        self.udp_port = tk.IntVar(value=5900)
+        
+        self.running = False
+        self.bus = None
+        self.receive_thread = None
 
         self.setup_ui()
-        
-        # CAN setup
+        self.update_ui()
+
+    def connect_bus(self):
+        if self.running:
+            return
+            
         try:
-            logger.info("Opening CAN bus on COM5 at 1Mbps")
-            self.bus = can.interface.Bus(bustype='slcan', channel='COM5', bitrate=1000000)
+            if self.conn_type.get() == "CANable (slcan)":
+                logger.info(f"Opening CAN bus on {self.slcan_port.get()} at {self.slcan_bitrate.get()}bps")
+                self.bus = can.interface.Bus(bustype='slcan', channel=self.slcan_port.get(), bitrate=self.slcan_bitrate.get())
+            else:
+                logger.info(f"Opening UDP bus at {self.udp_ip.get()}:{self.udp_port.get()}")
+                self.bus = UDPBus(self.udp_ip.get(), self.udp_port.get())
+                
             self.running = True
+            self.btn_connect.config(state="disabled")
+            self.btn_disconnect.config(state="normal")
             
             self.receive_thread = threading.Thread(target=self.receive_can, name="ReceiveThread", daemon=True)
+            self.util_history.clear()
+            self.max_bus_util = 0.0
             self.receive_thread.start()
         except Exception as e:
             logger.error(f"Error opening CAN bus: {e}")
             self.running = False
-
-        self.update_ui()
+            
+    def disconnect_bus(self):
+        self.running = False
+        if self.receive_thread:
+            self.receive_thread.join(timeout=1.0)
+            self.receive_thread = None
+        if self.bus:
+            if hasattr(self.bus, 'shutdown'):
+                self.bus.shutdown()
+            self.bus = None
+        
+        self.btn_connect.config(state="normal")
+        self.btn_disconnect.config(state="disabled")
 
     def setup_ui(self):
         style = ttk.Style()
         style.configure("Header.TLabel", font=("Arial", 12, "bold"))
         style.configure("Data.TLabel", font=("Consolas", 10))
+
+        # Connection Section
+        frame_conn = ttk.LabelFrame(self.root, text=" Connection ", padding=10)
+        frame_conn.pack(fill="x", padx=10, pady=5)
+        
+        conn_row1 = ttk.Frame(frame_conn)
+        conn_row1.pack(fill="x", pady=2)
+        ttk.Radiobutton(conn_row1, text="CANable (slcan)", variable=self.conn_type, value="CANable (slcan)").pack(side="left")
+        ttk.Label(conn_row1, text="Port:").pack(side="left", padx=(10,2))
+        ttk.Entry(conn_row1, textvariable=self.slcan_port, width=8).pack(side="left")
+        ttk.Label(conn_row1, text="Bitrate:").pack(side="left", padx=(10,2))
+        ttk.Entry(conn_row1, textvariable=self.slcan_bitrate, width=10).pack(side="left")
+        
+        conn_row2 = ttk.Frame(frame_conn)
+        conn_row2.pack(fill="x", pady=2)
+        ttk.Radiobutton(conn_row2, text="UDP Server (Backporch)", variable=self.conn_type, value="UDP").pack(side="left")
+        ttk.Label(conn_row2, text="IP:").pack(side="left", padx=(10,2))
+        ttk.Entry(conn_row2, textvariable=self.udp_ip, width=15).pack(side="left")
+        ttk.Label(conn_row2, text="Port:").pack(side="left", padx=(10,2))
+        ttk.Entry(conn_row2, textvariable=self.udp_port, width=8).pack(side="left")
+        
+        conn_row3 = ttk.Frame(frame_conn)
+        conn_row3.pack(fill="x", pady=5)
+        self.btn_connect = ttk.Button(conn_row3, text="Connect", command=self.connect_bus)
+        self.btn_connect.pack(side="left", padx=5)
+        self.btn_disconnect = ttk.Button(conn_row3, text="Disconnect", command=self.disconnect_bus, state="disabled")
+        self.btn_disconnect.pack(side="left", padx=5)
 
         # Bootloader Section
         frame_boot = ttk.LabelFrame(self.root, text=" Bootloader ", padding=10)
@@ -386,6 +496,9 @@ class CanMonitorApp:
 
     def safe_send(self, msg):
         """Sends a message and counts bits for utilization."""
+        if self.bus is None:
+            logger.error("Send error: Not connected")
+            return
         try:
             self.bus.send(msg)
             # Count bits for utilization (approx 160 bits for 8-byte extended frame)
@@ -467,10 +580,20 @@ class CanMonitorApp:
         dt = now_util - self.last_util_time
         if dt >= 0.1: # Update every 100ms
             # Capacity in bits = bitrate * dt
-            # Using 1,000,000 as bitrate
-            capacity = 1000000 * dt
+            # Try to use configured bitrate or default to 1Mbps
+            try:
+                bitrate = self.slcan_bitrate.get()
+            except:
+                bitrate = 1000000
+                
+            capacity = bitrate * dt
             util = (self.total_bits / capacity) * 100
-            self.bus_util_str.set(f"Bus Util: {util:4.1f}%")
+            
+            self.util_history.append(util)
+            self.max_bus_util = max(self.max_bus_util, util)
+            avg_util = sum(self.util_history) / len(self.util_history) if self.util_history else 0
+            
+            self.bus_util_str.set(f"Bus: {util:4.1f}% | 1s Avg: {avg_util:4.1f}% | Max: {self.max_bus_util:4.1f}%")
             self.total_bits = 0
             self.last_util_time = now_util
 
