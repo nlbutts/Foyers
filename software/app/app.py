@@ -301,7 +301,13 @@ class CanMonitorApp:
                 if i % 512 == 0:
                     logger.debug(f"Sent {sent}/{total_size} bytes")
                     self.update_status.set(f"Sending: {sent}/{total_size} bytes")
-                time.sleep(0.0005)
+                # Strictly pace the packets by 2.0 milliseconds (approx 500 packets/sec)
+                # We use a precise busy-wait loop because time.sleep() on Windows 
+                # can either yield 15ms or 0ms depending on the system clock tick rate, 
+                # which causes massive UDP bursting that overflows the RoboRIO CAN TX queue.
+                target_time = time.perf_counter() + 0.004
+                while time.perf_counter() < target_time:
+                    pass
 
             logger.info("All data sent. Sending COMMIT command.")
             self.update_status.set("Committing...")
